@@ -1,0 +1,28 @@
+[project]
+name = "autoresearch-timeseries-agent"
+version = "0.1.0"
+description = "Stateful AI experiment agent for multivariate time-series forecasting."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "torch",
+    "matplotlib",
+    "pydantic",
+    "pyyaml",
+    "rich",
+    "typer",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

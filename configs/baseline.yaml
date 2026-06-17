@@ -1,0 +1,13 @@
+dataset:
+  name: synthetic
+  input_length: 48
+  forecast_horizon: 24
+
+experiment:
+  model: persistence
+  seed: 42
+
+training:
+  batch_size: 64
+  epochs: 5
+  learning_rate: 0.001

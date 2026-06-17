@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+src/autoresearch_timeseries_agent/__init__.py
+src/autoresearch_timeseries_agent/main.py
+src/autoresearch_timeseries_agent.egg-info/PKG-INFO
+src/autoresearch_timeseries_agent.egg-info/SOURCES.txt
+src/autoresearch_timeseries_agent.egg-info/dependency_links.txt
+src/autoresearch_timeseries_agent.egg-info/requires.txt
+src/autoresearch_timeseries_agent.egg-info/top_level.txt
+src/autoresearch_timeseries_agent/agents/__init__.py
+src/autoresearch_timeseries_agent/data/__init__.py
+src/autoresearch_timeseries_agent/evaluation/__init__.py
+src/autoresearch_timeseries_agent/models/__init__.py
+src/autoresearch_timeseries_agent/reporting/__init__.py
+src/autoresearch_timeseries_agent/tools/__init__.py
+src/autoresearch_timeseries_agent/training/__init__.py
+tests/test_smoke.py

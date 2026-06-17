@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: autoresearch-timeseries-agent
+Version: 0.1.0
+Summary: Stateful AI experiment agent for multivariate time-series forecasting.
+Requires-Python: >=3.11
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scikit-learn
+Requires-Dist: torch
+Requires-Dist: matplotlib
+Requires-Dist: pydantic
+Requires-Dist: pyyaml
+Requires-Dist: rich
+Requires-Dist: typer
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
