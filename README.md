@@ -65,6 +65,12 @@ Compare saved runs with:
 python -m autoresearch_timeseries_agent.training.compare_runs
 ```
 
+Run the deterministic local experiment agent with:
+
+```bash
+python -m autoresearch_timeseries_agent.agents.run_agent --objective "Improve chronological validation RMSE under a small CPU budget"
+```
+
 The runner:
 
 - generates deterministic synthetic multivariate time-series data
@@ -85,6 +91,23 @@ The comparison command reads JSON files in `reports/runs/`, writes
 `reports/model_comparison.json` and `reports/model_comparison.md`, and ranks models by
 validation RMSE. Test metrics are reported for final held-out evaluation context only;
 they are not used to choose the best model.
+
+## Deterministic Agent
+
+The current agent is a controlled local experiment orchestrator, not an LLM agent. It
+uses a fixed rule-based state machine:
+
+Planner -> Config Writer -> Runner -> Evaluator -> Critic -> Report Writer
+
+It reads existing comparison and dataset diagnostics reports when available, proposes at
+most three safe experiments, writes generated configs only under
+`configs/agent_generated/`, runs them through the existing experiment runner, refreshes
+the comparison report, and writes `reports/agent/agent_plan.*` and
+`reports/agent/agent_final_report.*`.
+
+The agent does not edit source code, does not call OpenAI or external APIs, and does not
+use LangChain, LangGraph, Streamlit, FastAPI, or Docker. It currently supports only
+bounded config changes for `linear`, `lstm`, and `transformer` experiments.
 
 ## Synthetic Modes
 
@@ -149,6 +172,7 @@ Forecasting foundation implemented:
 - YAML-driven experiment runner
 - Reproducible run reports and validation-ranked model comparison
 - Dataset and prediction diagnostics
+- Deterministic rule-based experiment agent
 - Pytest coverage for data, models, metrics, runner, and comparison smoke tests
 
-Agent orchestration is planned but not implemented.
+LLM-based agent orchestration is planned but not implemented.

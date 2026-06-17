@@ -1,0 +1,29 @@
+experiment:
+  name: agent_transformer_shift_probe_chronological
+dataset:
+  name: synthetic
+  mode: nonlinear
+  split_strategy: chronological
+  n_timesteps: 600
+  n_features: 4
+  input_length: 48
+  forecast_horizon: 24
+  train_fraction: 0.7
+  val_fraction: 0.15
+  seed: 42
+model:
+  name: transformer
+  d_model: 32
+  nhead: 4
+  num_layers: 1
+  dim_feedforward: 64
+  dropout: 0.1
+  batch_size: 32
+  epochs: 16
+  learning_rate: 0.001
+  seed: 42
+training:
+  scale_features: true
+  normalize_target: true
+reporting:
+  runs_dir: reports/runs

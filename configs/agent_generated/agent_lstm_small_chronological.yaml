@@ -1,0 +1,27 @@
+experiment:
+  name: agent_lstm_small_chronological
+dataset:
+  name: synthetic
+  mode: nonlinear
+  split_strategy: chronological
+  n_timesteps: 600
+  n_features: 4
+  input_length: 48
+  forecast_horizon: 24
+  train_fraction: 0.7
+  val_fraction: 0.15
+  seed: 42
+model:
+  name: lstm
+  hidden_size: 32
+  num_layers: 1
+  dropout: 0.0
+  batch_size: 32
+  epochs: 12
+  learning_rate: 0.003
+  seed: 42
+training:
+  scale_features: true
+  normalize_target: true
+reporting:
+  runs_dir: reports/runs

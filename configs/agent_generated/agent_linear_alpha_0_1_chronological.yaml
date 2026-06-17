@@ -1,0 +1,21 @@
+experiment:
+  name: agent_linear_alpha_0_1_chronological
+dataset:
+  name: synthetic
+  mode: nonlinear
+  split_strategy: chronological
+  n_timesteps: 600
+  n_features: 4
+  input_length: 48
+  forecast_horizon: 24
+  train_fraction: 0.7
+  val_fraction: 0.15
+  seed: 42
+model:
+  name: linear
+  alpha: 0.1
+training:
+  scale_features: false
+  normalize_target: false
+reporting:
+  runs_dir: reports/runs
