@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from autoresearch_timeseries_agent.reporting.build_project_summary import build_project_summary
+from autoresearch_timeseries_agent.reporting.check_repo_health import check_repo_health
 from autoresearch_timeseries_agent.reporting.plots import generate_plots
 
 
@@ -100,6 +101,64 @@ def test_build_project_summary_creates_markdown_and_json(tmp_path: Path) -> None
     assert "deterministic local ingestion demo" in markdown
 
 
+def test_repo_health_creates_expected_files_and_keys(tmp_path: Path) -> None:
+    _write_minimal_healthy_repo(tmp_path)
+
+    health = check_repo_health(project_root=tmp_path, output_dir=tmp_path / "reports")
+
+    assert (tmp_path / "reports" / "repo_health_check.md").exists()
+    assert (tmp_path / "reports" / "repo_health_check.json").exists()
+    assert health["overall_status"] == "pass"
+    required_keys = {
+        "readme_exists",
+        "makefile_exists",
+        "pyproject_exists",
+        "tests_directory_exists",
+        "architecture_doc_exists",
+        "method_notes_doc_exists",
+        "reproducibility_doc_exists",
+        "interview_notes_doc_exists",
+        "limitations_doc_exists",
+        "project_summary_exists",
+        "model_comparison_exists",
+        "figures_exist",
+        "ci_workflow_exists",
+        "tests_do_not_require_generated_raw_data",
+    }
+    assert required_keys <= set(health["checks"])
+    assert all(health["checks"][key]["passed"] for key in required_keys)
+
+
+def test_repo_health_reports_missing_files_gracefully(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_placeholder.py").write_text(
+        "def test_placeholder():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    health = check_repo_health(project_root=tmp_path, output_dir=tmp_path / "reports")
+
+    assert health["overall_status"] == "needs_attention"
+    assert health["checks"]["readme_exists"]["passed"] is False
+    assert health["checks"]["project_summary_exists"]["passed"] is False
+    assert health["checks"]["tests_do_not_require_generated_raw_data"]["passed"] is True
+
+
+def test_readme_referenced_docs_exist() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    doc_paths = [
+        Path("docs/architecture.md"),
+        Path("docs/method_notes.md"),
+        Path("docs/reproducibility.md"),
+        Path("docs/interview_notes.md"),
+        Path("docs/limitations.md"),
+    ]
+
+    for path in doc_paths:
+        assert f"({path.as_posix()})" in readme
+        assert path.exists()
+
+
 def _write_run(
     path: Path,
     *,
@@ -132,6 +191,32 @@ def _write_run(
         },
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_minimal_healthy_repo(root: Path) -> None:
+    (root / "README.md").write_text("README\n", encoding="utf-8")
+    (root / "Makefile").write_text("check:\n\tpytest -q\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_placeholder.py").write_text(
+        "def test_placeholder():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (root / "docs").mkdir()
+    for filename in (
+        "architecture.md",
+        "method_notes.md",
+        "reproducibility.md",
+        "interview_notes.md",
+        "limitations.md",
+    ):
+        (root / "docs" / filename).write_text(f"# {filename}\n", encoding="utf-8")
+    (root / "reports" / "figures").mkdir(parents=True)
+    (root / "reports" / "project_summary.md").write_text("# Summary\n", encoding="utf-8")
+    (root / "reports" / "model_comparison.md").write_text("# Comparison\n", encoding="utf-8")
+    (root / "reports" / "figures" / "figure.png").write_bytes(b"png")
+    (root / ".github" / "workflows").mkdir(parents=True)
+    (root / ".github" / "workflows" / "ci.yml").write_text("name: CI\n", encoding="utf-8")
 
 
 def _metrics(rmse: float) -> dict[str, float | list[float]]:
