@@ -7,7 +7,7 @@ models while using a controlled agent loop to plan experiments, run configs, eva
 metrics, and write reproducible reports.
 
 This implementation intentionally remains non-agentic. There is no LangChain,
-LangGraph, OpenAI integration, web app, Docker setup, or Transformer code yet.
+LangGraph, OpenAI integration, web app, or Docker setup yet.
 
 ## Baseline Experiments
 
@@ -52,6 +52,13 @@ python -m autoresearch_timeseries_agent.training.run_experiment --config configs
 python -m autoresearch_timeseries_agent.training.run_experiment --config configs/lstm_blocked_shuffle.yaml
 ```
 
+Run the from-scratch PyTorch Transformer baseline with:
+
+```bash
+python -m autoresearch_timeseries_agent.training.run_experiment --config configs/transformer_scaled.yaml
+python -m autoresearch_timeseries_agent.training.run_experiment --config configs/transformer_blocked_shuffle.yaml
+```
+
 Compare saved runs with:
 
 ```bash
@@ -62,7 +69,7 @@ The runner:
 
 - generates deterministic synthetic multivariate time-series data
 - creates chronological train/validation/test forecasting windows
-- trains the persistence, Ridge linear, or LSTM baseline
+- trains the persistence, Ridge linear, LSTM, or Transformer baseline
 - supports chronological and blocked-shuffle window splitting
 - can scale features and normalize targets from train-split statistics only
 - evaluates RMSE, MAE, MAPE, and per-horizon RMSE
@@ -99,11 +106,16 @@ Linear baselines may win on simple synthetic data. The LSTM baseline is included
 sequence modeling behavior under harder dynamics, especially when
 `dataset.mode: nonlinear` is enabled.
 
-The LSTM is currently being debugged and tuned before adding a Transformer. A large gap
-between train and validation/test RMSE can indicate distribution shift, undertraining,
-or scale issues; the tuning configs plus `training.scale_features` and
-`training.normalize_target` are intended to separate those cases with small
-CPU-friendly runs.
+The Transformer baseline is a compact from-scratch PyTorch encoder model with input
+projection, sinusoidal positional encoding, Transformer encoder blocks, last-token
+pooling, and a direct multi-horizon forecasting head. It is intended as a CPU-practical
+baseline, not a research-grade architecture.
+
+A large gap between train and validation/test RMSE can indicate distribution shift,
+undertraining, or scale issues; the tuning configs plus `training.scale_features` and
+`training.normalize_target` are intended to separate those cases with small CPU-friendly
+runs. Blocked-shuffle runs are diagnostic only. Realistic model claims should focus on
+chronological results.
 
 ## Planned System
 
@@ -132,6 +144,7 @@ Forecasting foundation implemented:
 - Supervised windowing for first-feature forecasting
 - Persistence and Ridge linear baselines
 - PyTorch LSTM baseline
+- PyTorch Transformer encoder baseline
 - Evaluation metrics
 - YAML-driven experiment runner
 - Reproducible run reports and validation-ranked model comparison

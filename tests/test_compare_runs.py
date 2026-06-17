@@ -37,6 +37,13 @@ def test_compare_runs_smoke_and_validation_ranking(tmp_path: Path) -> None:
         val_rmse=2.2,
         test_rmse=5.0,
     )
+    _write_run(
+        runs_dir / "transformer_scaled.json",
+        experiment_name="transformer_scaled",
+        model_name="transformer",
+        val_rmse=2.1,
+        test_rmse=3.0,
+    )
 
     comparison = compare_runs(runs_dir=runs_dir, output_dir=tmp_path)
 
@@ -48,6 +55,7 @@ def test_compare_runs_smoke_and_validation_ranking(tmp_path: Path) -> None:
         "low_test_high_val",
         "middle_lstm",
         "lstm_normalized",
+        "transformer_scaled",
     }
     assert (tmp_path / "model_comparison.json").exists()
     markdown = (tmp_path / "model_comparison.md").read_text(encoding="utf-8")
@@ -68,7 +76,10 @@ def _write_run(
         "experiment_name": experiment_name,
         "model": {"name": model_name, "params": {}},
         "dataset": {"split_strategy": "chronological"},
-        "training": {"scale_features": model_name == "lstm", "normalize_target": model_name == "lstm"},
+        "training": {
+            "scale_features": model_name in {"lstm", "transformer"},
+            "normalize_target": model_name in {"lstm", "transformer"},
+        },
         "metrics": {
             "train": {"rmse": val_rmse, "mae": 1.0, "mape": 1.0, "per_horizon_rmse": [1.0]},
             "val": {"rmse": val_rmse, "mae": 1.0, "mape": 1.0, "per_horizon_rmse": [1.0]},

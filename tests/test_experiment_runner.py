@@ -10,7 +10,12 @@ import numpy as np
 import pytest
 
 from autoresearch_timeseries_agent.data import SyntheticDatasetConfig
-from autoresearch_timeseries_agent.models import LSTMForecaster, LinearBaseline, PersistenceBaseline
+from autoresearch_timeseries_agent.models import (
+    LSTMForecaster,
+    LinearBaseline,
+    PersistenceBaseline,
+    TransformerForecaster,
+)
 from autoresearch_timeseries_agent.training import (
     ModelConfig,
     build_model,
@@ -37,23 +42,28 @@ def test_load_experiment_config(tmp_path: Path) -> None:
 
 
 def test_model_factory_selects_models() -> None:
-    dataset_config = SyntheticDatasetConfig(n_features=3, forecast_horizon=6)
+    dataset_config = SyntheticDatasetConfig(n_features=3, input_length=12, forecast_horizon=6)
     persistence = build_model(ModelConfig(name="persistence", params={}))
     linear = build_model(ModelConfig(name="linear", params={"alpha": 0.25}))
     lstm = build_model(
         ModelConfig(name="lstm", params={"hidden_size": 8, "num_layers": 1}),
         dataset_config,
     )
+    transformer = build_model(
+        ModelConfig(name="transformer", params={"d_model": 8, "nhead": 2}),
+        dataset_config,
+    )
 
     assert isinstance(persistence, PersistenceBaseline)
     assert isinstance(linear, LinearBaseline)
     assert isinstance(lstm, LSTMForecaster)
+    assert isinstance(transformer, TransformerForecaster)
     assert linear.alpha == 0.25
 
     with pytest.raises(ValueError, match="dataset_config is required"):
         build_model(ModelConfig(name="lstm", params={}))
     with pytest.raises(ValueError, match="Unsupported baseline model"):
-        build_model(ModelConfig(name="transformer", params={}))
+        build_model(ModelConfig(name="cnn", params={}))
 
 
 def test_run_experiment_smoke(tmp_path: Path) -> None:
@@ -130,6 +140,42 @@ def test_lstm_experiment_smoke(tmp_path: Path) -> None:
     assert payload["metrics"]["test"]["rmse"] > 0
 
 
+def test_transformer_experiment_smoke(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        experiment_name="transformer_smoke",
+        model_name="transformer",
+    )
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"src{os.pathsep}{env.get('PYTHONPATH', '')}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "autoresearch_timeseries_agent.training.run_experiment",
+            "--config",
+            str(config_path),
+        ],
+        check=True,
+        capture_output=True,
+        cwd=Path.cwd(),
+        env=env,
+        text=True,
+    )
+
+    results_path = tmp_path / "runs" / "transformer_smoke.json"
+    assert "transformer_smoke: val RMSE=" in result.stdout
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    assert payload["model"]["name"] == "transformer"
+    assert payload["scale_features"] is True
+    assert payload["normalize_target"] is True
+    assert payload["training"]["scalers"]["features"]["enabled"] is True
+    assert payload["training"]["scalers"]["target"]["enabled"] is True
+    assert len(payload["training"]["loss_history"]) == 2
+    assert payload["metrics"]["test"]["rmse"] > 0
+
+
 def test_feature_scaler_uses_train_statistics_only() -> None:
     train_X = np.array(
         [
@@ -183,6 +229,19 @@ def _write_config(tmp_path: Path, *, experiment_name: str, model_name: str) -> P
         if model_name == "lstm"
         else ""
     )
+    transformer_lines = (
+        "  d_model: 8\n"
+        "  nhead: 2\n"
+        "  num_layers: 1\n"
+        "  dim_feedforward: 16\n"
+        "  dropout: 0.0\n"
+        "  batch_size: 16\n"
+        "  epochs: 2\n"
+        "  learning_rate: 0.01\n"
+        "  seed: 9\n"
+        if model_name == "transformer"
+        else ""
+    )
     config_path = tmp_path / f"{experiment_name}.yaml"
     config_path.write_text(
         f"""
@@ -201,7 +260,7 @@ dataset:
   seed: 9
 model:
   name: {model_name}
-{alpha_line}{lstm_lines}training:
+{alpha_line}{lstm_lines}{transformer_lines}training:
   scale_features: true
   normalize_target: true
 reporting:

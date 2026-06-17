@@ -3,7 +3,12 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from autoresearch_timeseries_agent.models import LSTMForecaster, LinearBaseline, PersistenceBaseline
+from autoresearch_timeseries_agent.models import (
+    LSTMForecaster,
+    LinearBaseline,
+    PersistenceBaseline,
+    TransformerForecaster,
+)
 
 
 def test_persistence_baseline_output_shape_and_values() -> None:
@@ -40,6 +45,24 @@ def test_lstm_forecaster_forward_output_shape() -> None:
         forecast_horizon=4,
         hidden_size=8,
         num_layers=1,
+        dropout=0.0,
+    )
+    X = torch.randn(5, 12, 3)
+
+    predictions = model(X)
+
+    assert predictions.shape == (5, 4)
+
+
+def test_transformer_forecaster_forward_output_shape() -> None:
+    model = TransformerForecaster(
+        n_features=3,
+        forecast_horizon=4,
+        input_length=12,
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
         dropout=0.0,
     )
     X = torch.randn(5, 12, 3)

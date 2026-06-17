@@ -16,10 +16,16 @@ import yaml
 from autoresearch_timeseries_agent.data import SyntheticDatasetConfig, make_synthetic_dataset
 from autoresearch_timeseries_agent.data.windowing import WindowedDataset
 from autoresearch_timeseries_agent.evaluation import evaluate_forecast
-from autoresearch_timeseries_agent.models import LinearBaseline, LSTMForecaster, PersistenceBaseline
+from autoresearch_timeseries_agent.models import (
+    LinearBaseline,
+    LSTMForecaster,
+    PersistenceBaseline,
+    TransformerForecaster,
+)
 
 
-BaselineModel = PersistenceBaseline | LinearBaseline | LSTMForecaster
+BaselineModel = PersistenceBaseline | LinearBaseline | LSTMForecaster | TransformerForecaster
+NeuralModel = LSTMForecaster | TransformerForecaster
 FloatArray = NDArray[np.float64]
 
 
@@ -161,9 +167,23 @@ def build_model(
             num_layers=int(config.params.get("num_layers", 1)),
             dropout=float(config.params.get("dropout", 0.0)),
         )
+    if model_name == "transformer":
+        if dataset_config is None:
+            msg = "dataset_config is required to build the Transformer model"
+            raise ValueError(msg)
+        return TransformerForecaster(
+            n_features=dataset_config.n_features,
+            forecast_horizon=dataset_config.forecast_horizon,
+            input_length=dataset_config.input_length,
+            d_model=int(config.params.get("d_model", 32)),
+            nhead=int(config.params.get("nhead", 4)),
+            num_layers=int(config.params.get("num_layers", 1)),
+            dim_feedforward=int(config.params.get("dim_feedforward", 64)),
+            dropout=float(config.params.get("dropout", 0.1)),
+        )
     msg = (
         f"Unsupported baseline model {config.name!r}; "
-        "expected 'persistence', 'linear', or 'lstm'"
+        "expected 'persistence', 'linear', 'lstm', or 'transformer'"
     )
     raise ValueError(msg)
 
@@ -305,8 +325,8 @@ def _train_model(
     model_config: ModelConfig,
     training_config: TrainingConfig,
 ) -> dict[str, Any]:
-    if isinstance(model, LSTMForecaster):
-        return _train_lstm(model, train, model_config, training_config)
+    if isinstance(model, (LSTMForecaster, TransformerForecaster)):
+        return _train_neural_model(model, train, model_config, training_config)
 
     model.fit(train.X, train.y)
     return {
@@ -365,13 +385,13 @@ def _predict_split(
 ) -> FloatArray:
     if isinstance(model, PersistenceBaseline):
         return model.predict(split.X, forecast_horizon=split.y.shape[1])
-    if isinstance(model, LSTMForecaster):
-        return _predict_lstm(model, split.X)
+    if isinstance(model, (LSTMForecaster, TransformerForecaster)):
+        return _predict_neural_model(model, split.X)
     return model.predict(split.X)
 
 
-def _train_lstm(
-    model: LSTMForecaster,
+def _train_neural_model(
+    model: NeuralModel,
     train: WindowedDataset,
     model_config: ModelConfig,
     training_config: TrainingConfig,
@@ -392,7 +412,7 @@ def _train_lstm(
         raise ValueError(msg)
 
     _seed_torch(seed)
-    X_train, y_train = _fit_lstm_scalers(
+    X_train, y_train = _fit_neural_scalers(
         model,
         train,
         scale_features=training_config.scale_features,
@@ -436,8 +456,8 @@ def _train_lstm(
     }
 
 
-def _fit_lstm_scalers(
-    model: LSTMForecaster,
+def _fit_neural_scalers(
+    model: NeuralModel,
     train: WindowedDataset,
     *,
     scale_features: bool,
@@ -454,9 +474,9 @@ def _fit_lstm_scalers(
     )
 
 
-def _predict_lstm(model: LSTMForecaster, X: FloatArray) -> FloatArray:
+def _predict_neural_model(model: NeuralModel, X: FloatArray) -> FloatArray:
     if not hasattr(model, "feature_scaler_"):
-        msg = "LSTMForecaster must be trained before evaluation"
+        msg = f"{model.__class__.__name__} must be trained before evaluation"
         raise ValueError(msg)
     model.eval()
     scaled_X = torch.from_numpy(model.feature_scaler_.transform(X).astype(np.float32))
@@ -495,7 +515,7 @@ def _as_bool(value: Any) -> bool:
     raise ValueError(msg)
 
 
-def _scaler_metadata(model: LSTMForecaster) -> dict[str, Any]:
+def _scaler_metadata(model: NeuralModel) -> dict[str, Any]:
     feature_scaler = model.feature_scaler_
     target_scaler = model.target_scaler_
     return {
