@@ -28,6 +28,53 @@ def test_synthetic_data_is_deterministic_with_same_seed() -> None:
     np.testing.assert_array_equal(first, second)
 
 
+def test_nonlinear_synthetic_data_is_deterministic() -> None:
+    config = SyntheticDatasetConfig(
+        mode="nonlinear",
+        n_timesteps=120,
+        n_features=3,
+        input_length=12,
+        forecast_horizon=6,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        seed=123,
+    )
+
+    first = generate_synthetic_series(config)
+    second = generate_synthetic_series(config)
+
+    np.testing.assert_array_equal(first, second)
+
+
+def test_nonlinear_mode_differs_from_linear_mode() -> None:
+    linear_config = SyntheticDatasetConfig(
+        mode="linear",
+        n_timesteps=120,
+        n_features=3,
+        input_length=12,
+        forecast_horizon=6,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        seed=123,
+    )
+    nonlinear_config = SyntheticDatasetConfig(
+        mode="nonlinear",
+        n_timesteps=120,
+        n_features=3,
+        input_length=12,
+        forecast_horizon=6,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        seed=123,
+    )
+
+    linear = generate_synthetic_series(linear_config)
+    nonlinear = generate_synthetic_series(nonlinear_config)
+
+    assert nonlinear.shape == linear.shape
+    assert not np.array_equal(nonlinear, linear)
+
+
 def test_window_shapes() -> None:
     series = np.arange(40 * 3, dtype=np.float64).reshape(40, 3)
 

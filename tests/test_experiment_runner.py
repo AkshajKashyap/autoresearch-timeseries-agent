@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch_timeseries_agent.models import LinearBaseline, PersistenceBaseline
+from autoresearch_timeseries_agent.data import SyntheticDatasetConfig
+from autoresearch_timeseries_agent.models import LSTMForecaster, LinearBaseline, PersistenceBaseline
 from autoresearch_timeseries_agent.training import ModelConfig, build_model, load_experiment_config
 
 
@@ -18,6 +19,7 @@ def test_load_experiment_config(tmp_path: Path) -> None:
     config = load_experiment_config(config_path)
 
     assert config.experiment_name == "linear_test"
+    assert config.dataset.mode == "nonlinear"
     assert config.dataset.n_timesteps == 144
     assert config.dataset.n_features == 3
     assert config.model.name == "linear"
@@ -26,15 +28,23 @@ def test_load_experiment_config(tmp_path: Path) -> None:
 
 
 def test_model_factory_selects_models() -> None:
+    dataset_config = SyntheticDatasetConfig(n_features=3, forecast_horizon=6)
     persistence = build_model(ModelConfig(name="persistence", params={}))
     linear = build_model(ModelConfig(name="linear", params={"alpha": 0.25}))
+    lstm = build_model(
+        ModelConfig(name="lstm", params={"hidden_size": 8, "num_layers": 1}),
+        dataset_config,
+    )
 
     assert isinstance(persistence, PersistenceBaseline)
     assert isinstance(linear, LinearBaseline)
+    assert isinstance(lstm, LSTMForecaster)
     assert linear.alpha == 0.25
 
-    with pytest.raises(ValueError, match="Unsupported baseline model"):
+    with pytest.raises(ValueError, match="dataset_config is required"):
         build_model(ModelConfig(name="lstm", params={}))
+    with pytest.raises(ValueError, match="Unsupported baseline model"):
+        build_model(ModelConfig(name="transformer", params={}))
 
 
 def test_run_experiment_smoke(tmp_path: Path) -> None:
@@ -74,8 +84,51 @@ def test_run_experiment_smoke(tmp_path: Path) -> None:
     assert "worst_horizon" in payload["per_horizon_analysis"]["test"]
 
 
+def test_lstm_experiment_smoke(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        experiment_name="lstm_smoke",
+        model_name="lstm",
+    )
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"src{os.pathsep}{env.get('PYTHONPATH', '')}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "autoresearch_timeseries_agent.training.run_experiment",
+            "--config",
+            str(config_path),
+        ],
+        check=True,
+        capture_output=True,
+        cwd=Path.cwd(),
+        env=env,
+        text=True,
+    )
+
+    results_path = tmp_path / "runs" / "lstm_smoke.json"
+    assert "lstm_smoke: val RMSE=" in result.stdout
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    assert payload["model"]["name"] == "lstm"
+    assert len(payload["training"]["loss_history"]) == 2
+    assert payload["metrics"]["test"]["rmse"] > 0
+
+
 def _write_config(tmp_path: Path, *, experiment_name: str, model_name: str) -> Path:
     alpha_line = "  alpha: 0.25\n" if model_name == "linear" else ""
+    lstm_lines = (
+        "  hidden_size: 8\n"
+        "  num_layers: 1\n"
+        "  dropout: 0.0\n"
+        "  batch_size: 16\n"
+        "  epochs: 2\n"
+        "  learning_rate: 0.01\n"
+        "  seed: 9\n"
+        if model_name == "lstm"
+        else ""
+    )
     config_path = tmp_path / f"{experiment_name}.yaml"
     config_path.write_text(
         f"""
@@ -83,6 +136,7 @@ experiment:
   name: {experiment_name}
 dataset:
   name: synthetic
+  mode: nonlinear
   n_timesteps: 144
   n_features: 3
   input_length: 12
@@ -92,7 +146,7 @@ dataset:
   seed: 9
 model:
   name: {model_name}
-{alpha_line}reporting:
+{alpha_line}{lstm_lines}reporting:
   runs_dir: {tmp_path / "runs"}
 """,
         encoding="utf-8",

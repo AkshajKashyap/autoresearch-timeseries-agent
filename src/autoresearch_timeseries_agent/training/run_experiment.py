@@ -6,14 +6,21 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import torch
+from numpy.typing import NDArray
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 import yaml
 
 from autoresearch_timeseries_agent.data import SyntheticDatasetConfig, make_synthetic_dataset
+from autoresearch_timeseries_agent.data.windowing import WindowedDataset
 from autoresearch_timeseries_agent.evaluation import evaluate_forecast
-from autoresearch_timeseries_agent.models import LinearBaseline, PersistenceBaseline
+from autoresearch_timeseries_agent.models import LinearBaseline, LSTMForecaster, PersistenceBaseline
 
 
-BaselineModel = PersistenceBaseline | LinearBaseline
+BaselineModel = PersistenceBaseline | LinearBaseline | LSTMForecaster
+FloatArray = NDArray[np.float64]
 
 
 @dataclass(frozen=True)
@@ -33,13 +40,13 @@ class ExperimentConfig:
 def run_experiment(config_path: Path) -> dict[str, Any]:
     experiment_config = load_experiment_config(config_path)
     splits = make_synthetic_dataset(experiment_config.dataset)
-    model = build_model(experiment_config.model)
-    model.fit(splits.train.X, splits.train.y)
+    model = build_model(experiment_config.model, experiment_config.dataset)
+    training_summary = _train_model(model, splits.train, experiment_config.model)
 
     metrics = {
-        "train": _evaluate_split(model, splits.train.X, splits.train.y),
-        "val": _evaluate_split(model, splits.val.X, splits.val.y),
-        "test": _evaluate_split(model, splits.test.X, splits.test.y),
+        "train": _evaluate_split(model, splits.train),
+        "val": _evaluate_split(model, splits.val),
+        "test": _evaluate_split(model, splits.test),
     }
     results = {
         "experiment_name": experiment_config.experiment_name,
@@ -50,6 +57,7 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
         },
         "dataset": asdict(experiment_config.dataset),
         "metrics": metrics,
+        "training": training_summary,
         "per_horizon_analysis": {
             split_name: describe_per_horizon_rmse(split_metrics["per_horizon_rmse"])
             for split_name, split_metrics in metrics.items()
@@ -90,13 +98,30 @@ def load_experiment_config(config_path: Path) -> ExperimentConfig:
     )
 
 
-def build_model(config: ModelConfig) -> BaselineModel:
+def build_model(
+    config: ModelConfig,
+    dataset_config: SyntheticDatasetConfig | None = None,
+) -> BaselineModel:
     model_name = config.name.lower()
     if model_name == "persistence":
         return PersistenceBaseline()
     if model_name == "linear":
         return LinearBaseline(alpha=float(config.params.get("alpha", 1.0)))
-    msg = f"Unsupported baseline model {config.name!r}; expected 'persistence' or 'linear'"
+    if model_name == "lstm":
+        if dataset_config is None:
+            msg = "dataset_config is required to build the LSTM model"
+            raise ValueError(msg)
+        return LSTMForecaster(
+            n_features=dataset_config.n_features,
+            forecast_horizon=dataset_config.forecast_horizon,
+            hidden_size=int(config.params.get("hidden_size", 32)),
+            num_layers=int(config.params.get("num_layers", 1)),
+            dropout=float(config.params.get("dropout", 0.0)),
+        )
+    msg = (
+        f"Unsupported baseline model {config.name!r}; "
+        "expected 'persistence', 'linear', or 'lstm'"
+    )
     raise ValueError(msg)
 
 
@@ -163,6 +188,7 @@ def _dataset_config_from_mapping(config: dict[str, Any]) -> SyntheticDatasetConf
         raise ValueError(msg)
 
     return SyntheticDatasetConfig(
+        mode=str(dataset.get("mode", SyntheticDatasetConfig.mode)),
         n_timesteps=int(dataset.get("n_timesteps", SyntheticDatasetConfig.n_timesteps)),
         n_features=int(dataset.get("n_features", SyntheticDatasetConfig.n_features)),
         input_length=int(dataset.get("input_length", SyntheticDatasetConfig.input_length)),
@@ -185,16 +211,127 @@ def _model_config_from_mapping(config: dict[str, Any]) -> ModelConfig:
     return ModelConfig(name=name, params=params)
 
 
+def _train_model(
+    model: BaselineModel,
+    train: WindowedDataset,
+    model_config: ModelConfig,
+) -> dict[str, Any]:
+    if isinstance(model, LSTMForecaster):
+        return _train_lstm(model, train, model_config)
+
+    model.fit(train.X, train.y)
+    return {"loss_history": []}
+
+
 def _evaluate_split(
     model: BaselineModel,
-    X: Any,
-    y: Any,
+    split: WindowedDataset,
 ) -> dict[str, float | list[float]]:
     if isinstance(model, PersistenceBaseline):
-        predictions = model.predict(X, forecast_horizon=y.shape[1])
+        predictions = model.predict(split.X, forecast_horizon=split.y.shape[1])
+    elif isinstance(model, LSTMForecaster):
+        predictions = _predict_lstm(model, split.X)
     else:
-        predictions = model.predict(X)
-    return evaluate_forecast(y, predictions)
+        predictions = model.predict(split.X)
+    return evaluate_forecast(split.y, predictions)
+
+
+def _train_lstm(
+    model: LSTMForecaster,
+    train: WindowedDataset,
+    model_config: ModelConfig,
+) -> dict[str, Any]:
+    params = model_config.params
+    seed = int(params.get("seed", 42))
+    batch_size = int(params.get("batch_size", 32))
+    epochs = int(params.get("epochs", 10))
+    learning_rate = float(params.get("learning_rate", 0.001))
+    if batch_size <= 0:
+        msg = f"batch_size must be positive; got {batch_size}"
+        raise ValueError(msg)
+    if epochs <= 0:
+        msg = f"epochs must be positive; got {epochs}"
+        raise ValueError(msg)
+    if learning_rate <= 0:
+        msg = f"learning_rate must be positive; got {learning_rate}"
+        raise ValueError(msg)
+
+    _seed_torch(seed)
+    X_train, y_train = _fit_lstm_scalers(model, train)
+    generator = torch.Generator().manual_seed(seed)
+    loader = DataLoader(
+        TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train)),
+        batch_size=batch_size,
+        shuffle=True,
+        generator=generator,
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = nn.MSELoss()
+
+    loss_history: list[float] = []
+    model.train()
+    for _ in range(epochs):
+        total_loss = 0.0
+        total_examples = 0
+        for batch_X, batch_y in loader:
+            optimizer.zero_grad()
+            loss = criterion(model(batch_X), batch_y)
+            loss.backward()
+            optimizer.step()
+            batch_size_actual = batch_X.shape[0]
+            total_loss += float(loss.item()) * batch_size_actual
+            total_examples += batch_size_actual
+        loss_history.append(total_loss / total_examples)
+
+    return {
+        "loss_history": loss_history,
+        "final_loss": loss_history[-1],
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "learning_rate": learning_rate,
+        "seed": seed,
+    }
+
+
+def _fit_lstm_scalers(
+    model: LSTMForecaster,
+    train: WindowedDataset,
+) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+    feature_mean = train.X.mean(axis=(0, 1), keepdims=True)
+    feature_std = train.X.std(axis=(0, 1), keepdims=True)
+    target_mean = train.y.mean(axis=0, keepdims=True)
+    target_std = train.y.std(axis=0, keepdims=True)
+
+    model.feature_mean_ = feature_mean
+    model.feature_std_ = np.maximum(feature_std, 1e-8)
+    model.target_mean_ = target_mean
+    model.target_std_ = np.maximum(target_std, 1e-8)
+    return (
+        _scale_lstm_X(model, train.X).astype(np.float32),
+        ((train.y - model.target_mean_) / model.target_std_).astype(np.float32),
+    )
+
+
+def _predict_lstm(model: LSTMForecaster, X: FloatArray) -> FloatArray:
+    if not hasattr(model, "feature_mean_"):
+        msg = "LSTMForecaster must be trained before evaluation"
+        raise ValueError(msg)
+    model.eval()
+    scaled_X = torch.from_numpy(_scale_lstm_X(model, X).astype(np.float32))
+    with torch.no_grad():
+        scaled_predictions = model(scaled_X).numpy()
+    return scaled_predictions * model.target_std_ + model.target_mean_
+
+
+def _scale_lstm_X(model: LSTMForecaster, X: FloatArray) -> FloatArray:
+    return (X - model.feature_mean_) / model.feature_std_
+
+
+def _seed_torch(seed: int) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.set_num_threads(1)
+    torch.use_deterministic_algorithms(True)
 
 
 def _mapping_section(config: dict[str, Any], key: str) -> dict[str, Any]:
@@ -216,6 +353,7 @@ def _render_markdown_report(results: dict[str, Any]) -> str:
         "",
         f"- Model: `{model['name']}`",
         f"- Model params: `{model['params']}`",
+        f"- Dataset mode: `{dataset['mode']}`",
         f"- Timesteps: `{dataset['n_timesteps']}`",
         f"- Features: `{dataset['n_features']}`",
         f"- Input length: `{dataset['input_length']}`",
@@ -231,6 +369,19 @@ def _render_markdown_report(results: dict[str, Any]) -> str:
             f"{split_metrics['mae']:.4f} | {split_metrics['mape']:.2f}% |"
         )
 
+    training = results.get("training", {})
+    if training.get("loss_history"):
+        lines.extend(
+            [
+                "",
+                "## Training Summary",
+                "",
+                f"- Epochs: `{training['epochs']}`",
+                f"- Final training loss: `{training['final_loss']:.6f}`",
+                f"- Loss history: `{_format_loss_history(training['loss_history'])}`",
+            ]
+        )
+
     test_horizon = ", ".join(f"{value:.4f}" for value in metrics["test"]["per_horizon_rmse"])
     lines.extend(
         [
@@ -244,6 +395,10 @@ def _render_markdown_report(results: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _format_loss_history(loss_history: list[float]) -> str:
+    return ", ".join(f"{value:.6f}" for value in loss_history)
 
 
 def _render_horizon_interpretation(analysis: dict[str, bool | int | float]) -> str:

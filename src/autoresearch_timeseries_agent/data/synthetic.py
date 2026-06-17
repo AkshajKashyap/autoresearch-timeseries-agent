@@ -13,6 +13,7 @@ FloatArray = NDArray[np.float64]
 
 @dataclass(frozen=True)
 class SyntheticDatasetConfig:
+    mode: str = "linear"
     n_timesteps: int = 600
     n_features: int = 4
     input_length: int = 48
@@ -66,6 +67,9 @@ def generate_synthetic_series(config: SyntheticDatasetConfig) -> FloatArray:
             + feature_noise
         )
 
+    if config.mode == "nonlinear":
+        features = _apply_nonlinear_effects(features, time, rng)
+
     return features
 
 
@@ -96,6 +100,9 @@ def make_synthetic_dataset(config: SyntheticDatasetConfig) -> TimeSeriesDatasetS
 
 
 def _validate_config(config: SyntheticDatasetConfig) -> None:
+    if config.mode not in {"linear", "nonlinear"}:
+        msg = f"mode must be 'linear' or 'nonlinear'; got {config.mode!r}"
+        raise ValueError(msg)
     if config.n_timesteps <= 0:
         msg = f"n_timesteps must be positive; got {config.n_timesteps}"
         raise ValueError(msg)
@@ -146,3 +153,43 @@ def _split_series(
         raise ValueError(msg)
 
     return series[:train_end], series[train_end:val_end], series[val_end:]
+
+
+def _apply_nonlinear_effects(
+    features: FloatArray,
+    time: FloatArray,
+    rng: np.random.Generator,
+) -> FloatArray:
+    nonlinear = features.copy()
+    centered = features - features.mean(axis=0, keepdims=True)
+    amplitude = 1.0 + 0.25 * np.sin(2.0 * np.pi * time / 180.0)
+    regime_shift = np.where(time >= time[-1] * 0.55, 0.9, -0.2)
+
+    nonlinear[:, 0] = (
+        features[:, 0] * amplitude
+        + 0.035 * centered[:, 0] ** 2
+        + 0.35 * regime_shift
+    )
+
+    if features.shape[1] > 1:
+        lagged_target = np.roll(centered[:, 0], 3)
+        lagged_target[:3] = centered[0, 0]
+        nonlinear[:, 1] = (
+            features[:, 1]
+            + 0.18 * lagged_target
+            + 0.06 * centered[:, 0] * centered[:, 1]
+        )
+
+    for feature_idx in range(2, features.shape[1]):
+        lag = min(feature_idx + 2, features.shape[0] - 1)
+        lagged_previous = np.roll(centered[:, feature_idx - 1], lag)
+        if lag > 0:
+            lagged_previous[:lag] = centered[0, feature_idx - 1]
+        nonlinear[:, feature_idx] = (
+            features[:, feature_idx]
+            + 0.12 * np.tanh(lagged_previous)
+            + 0.15 * np.sin(centered[:, 0] / 3.0)
+        )
+
+    nonlinear += rng.normal(loc=0.0, scale=0.06, size=features.shape)
+    return nonlinear

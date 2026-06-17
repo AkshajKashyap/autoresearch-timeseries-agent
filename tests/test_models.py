@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import torch
 
-from autoresearch_timeseries_agent.models import LinearBaseline, PersistenceBaseline
+from autoresearch_timeseries_agent.models import LSTMForecaster, LinearBaseline, PersistenceBaseline
 
 
 def test_persistence_baseline_output_shape_and_values() -> None:
@@ -31,3 +32,18 @@ def test_linear_baseline_output_shape() -> None:
     predictions = model.predict(X[:4])
 
     assert predictions.shape == (4, 2)
+
+
+def test_lstm_forecaster_forward_output_shape() -> None:
+    model = LSTMForecaster(
+        n_features=3,
+        forecast_horizon=4,
+        hidden_size=8,
+        num_layers=1,
+        dropout=0.0,
+    )
+    X = torch.randn(5, 12, 3)
+
+    predictions = model(X)
+
+    assert predictions.shape == (5, 4)

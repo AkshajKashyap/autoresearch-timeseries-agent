@@ -23,6 +23,13 @@ def test_compare_runs_smoke_and_validation_ranking(tmp_path: Path) -> None:
         val_rmse=2.0,
         test_rmse=4.0,
     )
+    _write_run(
+        runs_dir / "middle_lstm.json",
+        experiment_name="middle_lstm",
+        model_name="lstm",
+        val_rmse=2.5,
+        test_rmse=2.0,
+    )
 
     comparison = compare_runs(runs_dir=runs_dir, output_dir=tmp_path)
 
