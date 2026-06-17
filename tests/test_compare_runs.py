@@ -50,7 +50,10 @@ def test_compare_runs_smoke_and_validation_ranking(tmp_path: Path) -> None:
         "lstm_normalized",
     }
     assert (tmp_path / "model_comparison.json").exists()
-    assert (tmp_path / "model_comparison.md").exists()
+    markdown = (tmp_path / "model_comparison.md").read_text(encoding="utf-8")
+    assert "Split Strategy" in markdown
+    assert "Scale Features" in markdown
+    assert "Normalize Target" in markdown
 
 
 def _write_run(
@@ -64,6 +67,8 @@ def _write_run(
     payload = {
         "experiment_name": experiment_name,
         "model": {"name": model_name, "params": {}},
+        "dataset": {"split_strategy": "chronological"},
+        "training": {"scale_features": model_name == "lstm", "normalize_target": model_name == "lstm"},
         "metrics": {
             "train": {"rmse": val_rmse, "mae": 1.0, "mape": 1.0, "per_horizon_rmse": [1.0]},
             "val": {"rmse": val_rmse, "mae": 1.0, "mape": 1.0, "per_horizon_rmse": [1.0]},

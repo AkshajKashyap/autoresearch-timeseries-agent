@@ -14,6 +14,7 @@ from autoresearch_timeseries_agent.models import LSTMForecaster, LinearBaseline,
 from autoresearch_timeseries_agent.training import (
     ModelConfig,
     build_model,
+    fit_feature_scaler,
     fit_target_scaler,
     load_experiment_config,
 )
@@ -30,6 +31,7 @@ def test_load_experiment_config(tmp_path: Path) -> None:
     assert config.dataset.n_features == 3
     assert config.model.name == "linear"
     assert config.model.params["alpha"] == 0.25
+    assert config.training.scale_features is True
     assert config.training.normalize_target is True
     assert config.runs_dir == tmp_path / "runs"
 
@@ -119,10 +121,29 @@ def test_lstm_experiment_smoke(tmp_path: Path) -> None:
     assert "lstm_smoke: val RMSE=" in result.stdout
     payload = json.loads(results_path.read_text(encoding="utf-8"))
     assert payload["model"]["name"] == "lstm"
+    assert payload["split_strategy"] == "chronological"
+    assert payload["scale_features"] is True
     assert payload["training"]["normalize_target"] is True
+    assert payload["training"]["scalers"]["features"]["enabled"] is True
     assert len(payload["training"]["loss_history"]) == 2
     assert "prediction_diagnostics" in payload
     assert payload["metrics"]["test"]["rmse"] > 0
+
+
+def test_feature_scaler_uses_train_statistics_only() -> None:
+    train_X = np.array(
+        [
+            [[1.0, 10.0], [3.0, 30.0]],
+            [[5.0, 50.0], [7.0, 70.0]],
+        ]
+    )
+    val_X = train_X + 100.0
+
+    scaler = fit_feature_scaler(train_X, scale_features=True)
+
+    np.testing.assert_allclose(scaler.mean.reshape(-1), np.array([4.0, 40.0]))
+    np.testing.assert_allclose(scaler.transform(train_X).mean(axis=(0, 1)), np.zeros(2))
+    assert scaler.transform(val_X).mean() > 1.0
 
 
 def test_target_scaler_roundtrip() -> None:
@@ -136,6 +157,17 @@ def test_target_scaler_roundtrip() -> None:
     disabled = fit_target_scaler(y, normalize_target=False)
     np.testing.assert_allclose(disabled.transform(y), y)
     np.testing.assert_allclose(disabled.inverse_transform(y), y)
+
+
+def test_target_scaler_uses_train_statistics_only() -> None:
+    train_y = np.array([[1.0, 2.0], [3.0, 6.0], [5.0, 10.0]])
+    val_y = train_y + 100.0
+
+    scaler = fit_target_scaler(train_y, normalize_target=True)
+
+    np.testing.assert_allclose(scaler.mean.reshape(-1), np.array([3.0, 6.0]))
+    np.testing.assert_allclose(scaler.transform(train_y).mean(axis=0), np.zeros(2))
+    assert scaler.transform(val_y).mean() > 1.0
 
 
 def _write_config(tmp_path: Path, *, experiment_name: str, model_name: str) -> Path:
@@ -159,6 +191,7 @@ experiment:
 dataset:
   name: synthetic
   mode: nonlinear
+  split_strategy: chronological
   n_timesteps: 144
   n_features: 3
   input_length: 12
@@ -169,6 +202,7 @@ dataset:
 model:
   name: {model_name}
 {alpha_line}{lstm_lines}training:
+  scale_features: true
   normalize_target: true
 reporting:
   runs_dir: {tmp_path / "runs"}

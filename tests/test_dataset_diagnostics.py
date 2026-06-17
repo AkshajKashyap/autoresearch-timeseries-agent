@@ -15,6 +15,7 @@ experiment:
 dataset:
   name: synthetic
   mode: nonlinear
+  split_strategy: chronological
   n_timesteps: 144
   n_features: 3
   input_length: 12
@@ -32,6 +33,7 @@ model:
   learning_rate: 0.01
   seed: 9
 training:
+  scale_features: true
   normalize_target: true
 reporting:
   runs_dir: {tmp_path / "runs"}
@@ -44,6 +46,9 @@ reporting:
     assert (output_dir / "dataset_diagnostics.json").exists()
     assert (output_dir / "dataset_diagnostics.md").exists()
     assert set(diagnostics["split_sizes"]) == {"train", "val", "test"}
+    assert diagnostics["split_strategy"] == "chronological"
     assert set(diagnostics["target"]) == {"train", "val", "test"}
+    assert "target_range_overlap" in diagnostics
+    assert "feature_shift" in diagnostics
     assert "naive_persistence_rmse" in diagnostics
     assert "warnings" in diagnostics

@@ -5,10 +5,12 @@ from typing import Any
 
 __all__ = [
     "ExperimentConfig",
+    "FeatureScaler",
     "ModelConfig",
     "TargetScaler",
     "TrainingConfig",
     "build_model",
+    "fit_feature_scaler",
     "fit_target_scaler",
     "load_experiment_config",
     "run_experiment",

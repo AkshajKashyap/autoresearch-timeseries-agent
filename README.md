@@ -44,6 +44,14 @@ python -m autoresearch_timeseries_agent.training.run_experiment --config configs
 python -m autoresearch_timeseries_agent.training.run_experiment --config configs/lstm_normalized.yaml
 ```
 
+Inspect and run the scaled LSTM diagnostics with:
+
+```bash
+python -m autoresearch_timeseries_agent.training.inspect_dataset --config configs/lstm_scaled.yaml
+python -m autoresearch_timeseries_agent.training.run_experiment --config configs/lstm_scaled.yaml
+python -m autoresearch_timeseries_agent.training.run_experiment --config configs/lstm_blocked_shuffle.yaml
+```
+
 Compare saved runs with:
 
 ```bash
@@ -55,6 +63,8 @@ The runner:
 - generates deterministic synthetic multivariate time-series data
 - creates chronological train/validation/test forecasting windows
 - trains the persistence, Ridge linear, or LSTM baseline
+- supports chronological and blocked-shuffle window splitting
+- can scale features and normalize targets from train-split statistics only
 - evaluates RMSE, MAE, MAPE, and per-horizon RMSE
 - saves prediction diagnostics, including small prediction samples and residual stats
 - writes run reports under `reports/runs/{experiment_name}.json` and
@@ -77,14 +87,23 @@ behavior. The nonlinear mode keeps the data deterministic and learnable, but add
 interactions, lagged feature dependencies, a mild regime shift, changing seasonal
 amplitude, and slightly higher noise.
 
+It also supports `dataset.split_strategy: chronological` and
+`dataset.split_strategy: blocked_shuffle`. Chronological splitting is the realistic
+forecasting setup: train windows come first in time, then validation, then test. This can
+expose distribution shift, which is often exactly what a deployment forecast must handle.
+Blocked shuffle creates windows chronologically, then deterministically shuffles and
+splits windows by seed. That is diagnostic only, not a deployment estimate, but it helps
+separate model capacity from pure extrapolation difficulty.
+
 Linear baselines may win on simple synthetic data. The LSTM baseline is included to test
 sequence modeling behavior under harder dynamics, especially when
 `dataset.mode: nonlinear` is enabled.
 
 The LSTM is currently being debugged and tuned before adding a Transformer. A large gap
 between train and validation/test RMSE can indicate distribution shift, undertraining,
-or scale issues; the tuning configs and `training.normalize_target` option are intended
-to separate those cases with small CPU-friendly runs.
+or scale issues; the tuning configs plus `training.scale_features` and
+`training.normalize_target` are intended to separate those cases with small
+CPU-friendly runs.
 
 ## Planned System
 

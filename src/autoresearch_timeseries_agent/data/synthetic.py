@@ -14,6 +14,7 @@ FloatArray = NDArray[np.float64]
 @dataclass(frozen=True)
 class SyntheticDatasetConfig:
     mode: str = "linear"
+    split_strategy: str = "chronological"
     n_timesteps: int = 600
     n_features: int = 4
     input_length: int = 48
@@ -74,9 +75,12 @@ def generate_synthetic_series(config: SyntheticDatasetConfig) -> FloatArray:
 
 
 def make_synthetic_dataset(config: SyntheticDatasetConfig) -> TimeSeriesDatasetSplits:
-    """Generate synthetic data and return chronological train/val/test windows."""
+    """Generate synthetic data and return train/val/test windows."""
 
     series = generate_synthetic_series(config)
+    if config.split_strategy == "blocked_shuffle":
+        return _make_blocked_shuffle_dataset(series, config)
+
     train_raw, val_raw, test_raw = _split_series(series, config)
 
     return TimeSeriesDatasetSplits(
@@ -102,6 +106,12 @@ def make_synthetic_dataset(config: SyntheticDatasetConfig) -> TimeSeriesDatasetS
 def _validate_config(config: SyntheticDatasetConfig) -> None:
     if config.mode not in {"linear", "nonlinear"}:
         msg = f"mode must be 'linear' or 'nonlinear'; got {config.mode!r}"
+        raise ValueError(msg)
+    if config.split_strategy not in {"chronological", "blocked_shuffle"}:
+        msg = (
+            "split_strategy must be 'chronological' or 'blocked_shuffle'; "
+            f"got {config.split_strategy!r}"
+        )
         raise ValueError(msg)
     if config.n_timesteps <= 0:
         msg = f"n_timesteps must be positive; got {config.n_timesteps}"
@@ -153,6 +163,42 @@ def _split_series(
         raise ValueError(msg)
 
     return series[:train_end], series[train_end:val_end], series[val_end:]
+
+
+def _make_blocked_shuffle_dataset(
+    series: FloatArray,
+    config: SyntheticDatasetConfig,
+) -> TimeSeriesDatasetSplits:
+    windows = create_windows(
+        series,
+        input_length=config.input_length,
+        forecast_horizon=config.forecast_horizon,
+    )
+    num_windows = windows.X.shape[0]
+    train_count = int(num_windows * config.train_fraction)
+    val_count = int(num_windows * config.val_fraction)
+    test_count = num_windows - train_count - val_count
+    if min(train_count, val_count, test_count) <= 0:
+        msg = (
+            "blocked_shuffle produced an empty split; increase n_timesteps or adjust "
+            f"fractions (train={train_count}, val={val_count}, test={test_count})"
+        )
+        raise ValueError(msg)
+
+    indices = np.random.default_rng(config.seed).permutation(num_windows)
+    train_idx = indices[:train_count]
+    val_idx = indices[train_count : train_count + val_count]
+    test_idx = indices[train_count + val_count :]
+    return TimeSeriesDatasetSplits(
+        train=_subset_windows(windows, train_idx),
+        val=_subset_windows(windows, val_idx),
+        test=_subset_windows(windows, test_idx),
+        raw_series=series,
+    )
+
+
+def _subset_windows(dataset: WindowedDataset, indices: NDArray[np.integer]) -> WindowedDataset:
+    return WindowedDataset(X=dataset.X[indices], y=dataset.y[indices])
 
 
 def _apply_nonlinear_effects(

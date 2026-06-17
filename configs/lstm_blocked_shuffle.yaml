@@ -1,10 +1,10 @@
 experiment:
-  name: lstm_longer_train
+  name: lstm_blocked_shuffle
 
 dataset:
   name: synthetic
   mode: nonlinear
-  split_strategy: chronological
+  split_strategy: blocked_shuffle
   n_timesteps: 600
   n_features: 4
   input_length: 48
@@ -19,7 +19,7 @@ model:
   num_layers: 1
   dropout: 0.0
   batch_size: 32
-  epochs: 32
+  epochs: 24
   learning_rate: 0.003
   seed: 42
 

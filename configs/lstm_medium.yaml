@@ -4,6 +4,7 @@ experiment:
 dataset:
   name: synthetic
   mode: nonlinear
+  split_strategy: chronological
   n_timesteps: 600
   n_features: 4
   input_length: 48
@@ -23,6 +24,7 @@ model:
   seed: 42
 
 training:
+  scale_features: true
   normalize_target: true
 
 reporting:

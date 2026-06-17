@@ -40,7 +40,18 @@ class ExperimentConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    normalize_target: bool = True
+    scale_features: bool = False
+    normalize_target: bool = False
+
+
+@dataclass(frozen=True)
+class FeatureScaler:
+    mean: FloatArray
+    std: FloatArray
+    enabled: bool
+
+    def transform(self, X: FloatArray) -> FloatArray:
+        return (X - self.mean) / self.std
 
 
 @dataclass(frozen=True)
@@ -78,9 +89,16 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
             "params": experiment_config.model.params,
         },
         "dataset": asdict(experiment_config.dataset),
+        "split_strategy": experiment_config.dataset.split_strategy,
+        "scale_features": experiment_config.training.scale_features,
+        "normalize_target": experiment_config.training.normalize_target,
         "metrics": metrics,
         "training": training_summary,
         "prediction_diagnostics": prediction_diagnostics,
+        "data_warnings": _target_range_warnings(
+            {"train": splits.train, "val": splits.val, "test": splits.test},
+            split_strategy=experiment_config.dataset.split_strategy,
+        ),
         "per_horizon_analysis": {
             split_name: describe_per_horizon_rmse(split_metrics["per_horizon_rmse"])
             for split_name, split_metrics in metrics.items()
@@ -187,6 +205,23 @@ def fit_target_scaler(y: NDArray[np.floating], *, normalize_target: bool) -> Tar
     )
 
 
+def fit_feature_scaler(X: NDArray[np.floating], *, scale_features: bool) -> FeatureScaler:
+    values = np.asarray(X, dtype=np.float64)
+    if values.ndim != 3:
+        msg = f"X must have shape (num_windows, input_length, n_features); got {values.shape}"
+        raise ValueError(msg)
+    if scale_features:
+        mean = values.mean(axis=(0, 1), keepdims=True)
+        std = np.maximum(values.std(axis=(0, 1), keepdims=True), 1e-8)
+        return FeatureScaler(mean=mean, std=std, enabled=True)
+
+    return FeatureScaler(
+        mean=np.zeros((1, 1, values.shape[2]), dtype=np.float64),
+        std=np.ones((1, 1, values.shape[2]), dtype=np.float64),
+        enabled=False,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a time-series baseline experiment.")
     parser.add_argument("--config", type=Path, required=True, help="Path to an experiment YAML config.")
@@ -231,6 +266,9 @@ def _dataset_config_from_mapping(config: dict[str, Any]) -> SyntheticDatasetConf
 
     return SyntheticDatasetConfig(
         mode=str(dataset.get("mode", SyntheticDatasetConfig.mode)),
+        split_strategy=str(
+            dataset.get("split_strategy", SyntheticDatasetConfig.split_strategy)
+        ),
         n_timesteps=int(dataset.get("n_timesteps", SyntheticDatasetConfig.n_timesteps)),
         n_features=int(dataset.get("n_features", SyntheticDatasetConfig.n_features)),
         input_length=int(dataset.get("input_length", SyntheticDatasetConfig.input_length)),
@@ -255,7 +293,10 @@ def _model_config_from_mapping(config: dict[str, Any]) -> ModelConfig:
 
 def _training_config_from_mapping(config: dict[str, Any]) -> TrainingConfig:
     training = _mapping_section(config, "training")
-    return TrainingConfig(normalize_target=_as_bool(training.get("normalize_target", True)))
+    return TrainingConfig(
+        scale_features=_as_bool(training.get("scale_features", False)),
+        normalize_target=_as_bool(training.get("normalize_target", False)),
+    )
 
 
 def _train_model(
@@ -268,7 +309,12 @@ def _train_model(
         return _train_lstm(model, train, model_config, training_config)
 
     model.fit(train.X, train.y)
-    return {"loss_history": []}
+    return {
+        "loss_history": [],
+        "scale_features": False,
+        "normalize_target": False,
+        "scalers": {},
+    }
 
 
 def _evaluate_splits(
@@ -349,6 +395,7 @@ def _train_lstm(
     X_train, y_train = _fit_lstm_scalers(
         model,
         train,
+        scale_features=training_config.scale_features,
         normalize_target=training_config.normalize_target,
     )
     generator = torch.Generator().manual_seed(seed)
@@ -383,7 +430,9 @@ def _train_lstm(
         "batch_size": batch_size,
         "learning_rate": learning_rate,
         "seed": seed,
+        "scale_features": training_config.scale_features,
         "normalize_target": training_config.normalize_target,
+        "scalers": _scaler_metadata(model),
     }
 
 
@@ -391,34 +440,29 @@ def _fit_lstm_scalers(
     model: LSTMForecaster,
     train: WindowedDataset,
     *,
+    scale_features: bool,
     normalize_target: bool,
 ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
-    feature_mean = train.X.mean(axis=(0, 1), keepdims=True)
-    feature_std = train.X.std(axis=(0, 1), keepdims=True)
+    feature_scaler = fit_feature_scaler(train.X, scale_features=scale_features)
     target_scaler = fit_target_scaler(train.y, normalize_target=normalize_target)
 
-    model.feature_mean_ = feature_mean
-    model.feature_std_ = np.maximum(feature_std, 1e-8)
+    model.feature_scaler_ = feature_scaler
     model.target_scaler_ = target_scaler
     return (
-        _scale_lstm_X(model, train.X).astype(np.float32),
+        feature_scaler.transform(train.X).astype(np.float32),
         target_scaler.transform(train.y).astype(np.float32),
     )
 
 
 def _predict_lstm(model: LSTMForecaster, X: FloatArray) -> FloatArray:
-    if not hasattr(model, "feature_mean_"):
+    if not hasattr(model, "feature_scaler_"):
         msg = "LSTMForecaster must be trained before evaluation"
         raise ValueError(msg)
     model.eval()
-    scaled_X = torch.from_numpy(_scale_lstm_X(model, X).astype(np.float32))
+    scaled_X = torch.from_numpy(model.feature_scaler_.transform(X).astype(np.float32))
     with torch.no_grad():
         scaled_predictions = model(scaled_X).numpy()
     return model.target_scaler_.inverse_transform(scaled_predictions)
-
-
-def _scale_lstm_X(model: LSTMForecaster, X: FloatArray) -> FloatArray:
-    return (X - model.feature_mean_) / model.feature_std_
 
 
 def _seed_torch(seed: int) -> None:
@@ -451,6 +495,49 @@ def _as_bool(value: Any) -> bool:
     raise ValueError(msg)
 
 
+def _scaler_metadata(model: LSTMForecaster) -> dict[str, Any]:
+    feature_scaler = model.feature_scaler_
+    target_scaler = model.target_scaler_
+    return {
+        "features": {
+            "enabled": feature_scaler.enabled,
+            "mean": feature_scaler.mean.reshape(-1).tolist() if feature_scaler.enabled else [],
+            "std": feature_scaler.std.reshape(-1).tolist() if feature_scaler.enabled else [],
+        },
+        "target": {
+            "enabled": target_scaler.enabled,
+            "mean": target_scaler.mean.reshape(-1).tolist() if target_scaler.enabled else [],
+            "std": target_scaler.std.reshape(-1).tolist() if target_scaler.enabled else [],
+        },
+    }
+
+
+def _target_range_warnings(
+    splits: dict[str, WindowedDataset],
+    *,
+    split_strategy: str,
+) -> list[str]:
+    if split_strategy != "chronological":
+        return []
+
+    train_min = float(splits["train"].y.min())
+    train_max = float(splits["train"].y.max())
+    train_range = max(train_max - train_min, 1e-8)
+    lower_bound = train_min - 0.25 * train_range
+    upper_bound = train_max + 0.25 * train_range
+
+    warnings = []
+    for split_name in ("val", "test"):
+        split_min = float(splits[split_name].y.min())
+        split_max = float(splits[split_name].y.max())
+        if split_min < lower_bound or split_max > upper_bound:
+            warnings.append(
+                f"{split_name} target range [{split_min:.4f}, {split_max:.4f}] "
+                f"is far outside train range [{train_min:.4f}, {train_max:.4f}]"
+            )
+    return warnings
+
+
 def _render_markdown_report(results: dict[str, Any]) -> str:
     dataset = results["dataset"]
     metrics = results["metrics"]
@@ -461,6 +548,9 @@ def _render_markdown_report(results: dict[str, Any]) -> str:
         f"- Model: `{model['name']}`",
         f"- Model params: `{model['params']}`",
         f"- Dataset mode: `{dataset['mode']}`",
+        f"- Split strategy: `{results['split_strategy']}`",
+        f"- Feature scaling: `{results['scale_features']}`",
+        f"- Target normalization: `{results['normalize_target']}`",
         f"- Timesteps: `{dataset['n_timesteps']}`",
         f"- Features: `{dataset['n_features']}`",
         f"- Input length: `{dataset['input_length']}`",
@@ -484,11 +574,17 @@ def _render_markdown_report(results: dict[str, Any]) -> str:
                 "## Training Summary",
                 "",
                 f"- Epochs: `{training['epochs']}`",
+                f"- Feature scaling: `{training['scale_features']}`",
                 f"- Target normalization: `{training['normalize_target']}`",
                 f"- Final training loss: `{training['final_loss']:.6f}`",
                 f"- Loss history: `{_format_loss_history(training['loss_history'])}`",
             ]
         )
+
+    warnings = results.get("data_warnings", [])
+    if warnings:
+        lines.extend(["", "## Data Warnings", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
 
     diagnostics = results.get("prediction_diagnostics", {}).get("test")
     if diagnostics:

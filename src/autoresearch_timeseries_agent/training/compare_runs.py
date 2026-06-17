@@ -71,9 +71,19 @@ def _load_run_results(runs_dir: Path) -> list[dict[str, Any]]:
 def _comparison_row(result: dict[str, Any]) -> dict[str, Any]:
     metrics = result["metrics"]
     model = result["model"]
+    training = result.get("training", {})
+    dataset = result.get("dataset", {})
     return {
         "experiment_name": result["experiment_name"],
         "model_name": model["name"],
+        "split_strategy": result.get(
+            "split_strategy",
+            dataset.get("split_strategy", "chronological"),
+        ),
+        "scale_features": bool(result.get("scale_features", training.get("scale_features", False))),
+        "normalize_target": bool(
+            result.get("normalize_target", training.get("normalize_target", False))
+        ),
         "val_rmse": float(metrics["val"]["rmse"]),
         "val_mae": float(metrics["val"]["mae"]),
         "val_mape": float(metrics["val"]["mape"]),
@@ -90,14 +100,14 @@ def _render_markdown_comparison(comparison: dict[str, Any]) -> str:
         "Models are ranked by validation RMSE. Test metrics are included only as held-out "
         "evaluation context and are not used for model selection.",
         "",
-        "| Rank | Experiment | Model | Val RMSE | Val MAE | Val MAPE | Test RMSE | Test MAE | Test MAPE |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Experiment | Model | Split Strategy | Val RMSE | Test RMSE | Scale Features | Normalize Target |",
+        "| ---: | --- | --- | --- | ---: | ---: | --- | --- |",
     ]
     for row in comparison["runs"]:
         lines.append(
             f"| {row['rank']} | {row['experiment_name']} | {row['model_name']} | "
-            f"{row['val_rmse']:.4f} | {row['val_mae']:.4f} | {row['val_mape']:.2f}% | "
-            f"{row['test_rmse']:.4f} | {row['test_mae']:.4f} | {row['test_mape']:.2f}% |"
+            f"{row['split_strategy']} | {row['val_rmse']:.4f} | {row['test_rmse']:.4f} | "
+            f"{row['scale_features']} | {row['normalize_target']} |"
         )
 
     lines.extend(["", f"Best by validation RMSE: `{comparison['best_experiment']}`", ""])

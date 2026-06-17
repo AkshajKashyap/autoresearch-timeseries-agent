@@ -4,6 +4,7 @@ experiment:
 dataset:
   name: synthetic
   mode: nonlinear
+  split_strategy: chronological
   n_timesteps: 600
   n_features: 4
   input_length: 48
@@ -14,6 +15,10 @@ dataset:
 
 model:
   name: persistence
+
+training:
+  scale_features: false
+  normalize_target: false
 
 reporting:
   runs_dir: reports/runs

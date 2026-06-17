@@ -114,3 +114,62 @@ def test_make_synthetic_dataset_returns_windowed_splits() -> None:
     assert splits.train.X.shape[1:] == (10, 4)
     assert splits.val.y.shape[1] == 5
     assert splits.test.y.shape[1] == 5
+
+
+def test_chronological_split_preserves_time_ordering() -> None:
+    config = SyntheticDatasetConfig(
+        split_strategy="chronological",
+        n_timesteps=120,
+        n_features=3,
+        input_length=12,
+        forecast_horizon=6,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        seed=5,
+    )
+
+    splits = make_synthetic_dataset(config)
+
+    np.testing.assert_array_equal(splits.train.X[0], splits.raw_series[:12])
+    np.testing.assert_array_equal(splits.val.X[0], splits.raw_series[72:84])
+    np.testing.assert_array_equal(splits.test.X[0], splits.raw_series[96:108])
+
+
+def test_blocked_shuffle_is_deterministic_by_seed() -> None:
+    config = SyntheticDatasetConfig(
+        split_strategy="blocked_shuffle",
+        n_timesteps=120,
+        n_features=3,
+        input_length=12,
+        forecast_horizon=6,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        seed=5,
+    )
+
+    first = make_synthetic_dataset(config)
+    second = make_synthetic_dataset(config)
+
+    np.testing.assert_array_equal(first.train.X, second.train.X)
+    np.testing.assert_array_equal(first.val.y, second.val.y)
+    np.testing.assert_array_equal(first.test.X, second.test.X)
+
+
+def test_blocked_shuffle_produces_same_window_dimensions_as_chronological() -> None:
+    base = dict(
+        n_timesteps=120,
+        n_features=3,
+        input_length=12,
+        forecast_horizon=6,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        seed=5,
+    )
+    chronological = make_synthetic_dataset(SyntheticDatasetConfig(**base))
+    shuffled = make_synthetic_dataset(
+        SyntheticDatasetConfig(split_strategy="blocked_shuffle", **base)
+    )
+
+    assert shuffled.train.X.shape[1:] == chronological.train.X.shape[1:]
+    assert shuffled.val.y.shape[1:] == chronological.val.y.shape[1:]
+    assert shuffled.test.X.shape[1:] == chronological.test.X.shape[1:]

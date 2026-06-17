@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 
 from autoresearch_timeseries_agent.data import make_synthetic_dataset
+from autoresearch_timeseries_agent.data.windowing import WindowedDataset
 from autoresearch_timeseries_agent.evaluation import rmse
 from autoresearch_timeseries_agent.models import PersistenceBaseline
 from autoresearch_timeseries_agent.training.run_experiment import load_experiment_config
@@ -18,29 +18,39 @@ from autoresearch_timeseries_agent.training.run_experiment import load_experimen
 def inspect_dataset(config_path: Path, *, output_dir: Path = Path("reports")) -> dict[str, Any]:
     experiment_config = load_experiment_config(config_path)
     splits = make_synthetic_dataset(experiment_config.dataset)
-    raw_splits = _raw_split_series(splits.raw_series, experiment_config.dataset)
+    split_map = {"train": splits.train, "val": splits.val, "test": splits.test}
 
     diagnostics = {
         "config_path": str(config_path),
         "dataset": asdict(experiment_config.dataset),
+        "split_strategy": experiment_config.dataset.split_strategy,
         "split_sizes": {
-            name: {"timesteps": raw.shape[0], "windows": getattr(splits, name).X.shape[0]}
-            for name, raw in raw_splits.items()
+            name: _split_size(split)
+            for name, split in split_map.items()
         },
         "target": {
-            name: _target_stats(getattr(splits, name).y)
-            for name in ("train", "val", "test")
+            name: _target_stats(split.y)
+            for name, split in split_map.items()
         },
+        "target_range_overlap": {},
         "features": {
-            name: _feature_stats(raw)
-            for name, raw in raw_splits.items()
+            name: _feature_stats(split.X)
+            for name, split in split_map.items()
+        },
+        "feature_shift": {
+            name: _feature_shift(split_map["train"].X, split_map[name].X)
+            for name in split_map
         },
         "naive_persistence_rmse": {
-            name: _persistence_rmse(getattr(splits, name).X, getattr(splits, name).y)
-            for name in ("train", "val", "test")
+            name: _persistence_rmse(split.X, split.y)
+            for name, split in split_map.items()
         },
     }
-    diagnostics["warnings"] = _range_warnings(diagnostics["target"])
+    diagnostics["target_range_overlap"] = _target_range_overlap(diagnostics["target"])
+    diagnostics["warnings"] = _range_warnings(
+        diagnostics["target"],
+        diagnostics["target_range_overlap"],
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "dataset_diagnostics.json"
@@ -61,17 +71,15 @@ def main() -> None:
     inspect_dataset(args.config, output_dir=args.output_dir)
 
 
-def _raw_split_series(series: NDArray[np.float64], dataset_config: Any) -> dict[str, NDArray[np.float64]]:
-    train_end = int(dataset_config.n_timesteps * dataset_config.train_fraction)
-    val_end = train_end + int(dataset_config.n_timesteps * dataset_config.val_fraction)
+def _split_size(split: WindowedDataset) -> dict[str, int]:
     return {
-        "train": series[:train_end],
-        "val": series[train_end:val_end],
-        "test": series[val_end:],
+        "windows": split.X.shape[0],
+        "input_length": split.X.shape[1],
+        "forecast_horizon": split.y.shape[1],
     }
 
 
-def _target_stats(y: NDArray[np.float64]) -> dict[str, float]:
+def _target_stats(y: Any) -> dict[str, float]:
     target = y.reshape(-1)
     return {
         "mean": float(target.mean()),
@@ -81,32 +89,66 @@ def _target_stats(y: NDArray[np.float64]) -> dict[str, float]:
     }
 
 
-def _feature_stats(values: NDArray[np.float64]) -> dict[str, list[float]]:
+def _feature_stats(values: Any) -> dict[str, list[float]]:
+    flattened = values.reshape(-1, values.shape[-1])
     return {
-        "mean": values.mean(axis=0).tolist(),
-        "std": values.std(axis=0).tolist(),
+        "mean": flattened.mean(axis=0).tolist(),
+        "std": flattened.std(axis=0).tolist(),
     }
 
 
-def _persistence_rmse(X: NDArray[np.float64], y: NDArray[np.float64]) -> float:
+def _feature_shift(train_X: Any, split_X: Any) -> dict[str, float]:
+    train = train_X.reshape(-1, train_X.shape[-1])
+    split = split_X.reshape(-1, split_X.shape[-1])
+    train_mean = train.mean(axis=0)
+    train_std = train.std(axis=0)
+    split_mean = split.mean(axis=0)
+    split_std = split.std(axis=0)
+    return {
+        "mean_abs_mean_shift": float(abs(split_mean - train_mean).mean()),
+        "mean_std_ratio": float((split_std / np.maximum(train_std, 1e-8)).mean()),
+    }
+
+
+def _persistence_rmse(X: Any, y: Any) -> float:
     model = PersistenceBaseline().fit(X, y)
     predictions = model.predict(X)
     return rmse(y, predictions)
 
 
-def _range_warnings(target_stats: dict[str, dict[str, float]]) -> list[str]:
+def _target_range_overlap(
+    target_stats: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float | bool]]:
     train = target_stats["train"]
-    train_range = max(train["max"] - train["min"], 1e-8)
-    lower_bound = train["min"] - 0.25 * train_range
-    upper_bound = train["max"] + 0.25 * train_range
+    overlaps = {}
+    for split_name in ("val", "test"):
+        split = target_stats[split_name]
+        overlap_min = max(train["min"], split["min"])
+        overlap_max = min(train["max"], split["max"])
+        overlap = max(overlap_max - overlap_min, 0.0)
+        split_range = max(split["max"] - split["min"], 1e-8)
+        overlaps[split_name] = {
+            "overlaps_train": overlap > 0.0,
+            "overlap_ratio": overlap / split_range,
+        }
+    return overlaps
+
+
+def _range_warnings(
+    target_stats: dict[str, dict[str, float]],
+    target_overlap: dict[str, dict[str, float | bool]],
+) -> list[str]:
+    train = target_stats["train"]
 
     warnings = []
     for split_name in ("val", "test"):
         split = target_stats[split_name]
-        if split["min"] < lower_bound or split["max"] > upper_bound:
+        overlap_ratio = float(target_overlap[split_name]["overlap_ratio"])
+        if overlap_ratio < 0.8:
             warnings.append(
                 f"{split_name} target range [{split['min']:.4f}, {split['max']:.4f}] "
-                f"is far outside train range [{train['min']:.4f}, {train['max']:.4f}]"
+                f"has only {overlap_ratio:.2f} overlap with train range "
+                f"[{train['min']:.4f}, {train['max']:.4f}]"
             )
     return warnings
 
@@ -117,17 +159,19 @@ def _render_markdown(diagnostics: dict[str, Any]) -> str:
         "",
         f"- Config: `{diagnostics['config_path']}`",
         f"- Dataset mode: `{diagnostics['dataset']['mode']}`",
+        f"- Split strategy: `{diagnostics['split_strategy']}`",
         "",
         "## Split Sizes",
         "",
-        "| Split | Timesteps | Windows | Persistence RMSE |",
-        "| --- | ---: | ---: | ---: |",
+        "| Split | Windows | Input Length | Forecast Horizon | Persistence RMSE |",
+        "| --- | ---: | ---: | ---: | ---: |",
     ]
     for split_name in ("train", "val", "test"):
         sizes = diagnostics["split_sizes"][split_name]
         persistence = diagnostics["naive_persistence_rmse"][split_name]
         lines.append(
-            f"| {split_name} | {sizes['timesteps']} | {sizes['windows']} | {persistence:.4f} |"
+            f"| {split_name} | {sizes['windows']} | {sizes['input_length']} | "
+            f"{sizes['forecast_horizon']} | {persistence:.4f} |"
         )
 
     lines.extend(
@@ -144,6 +188,38 @@ def _render_markdown(diagnostics: dict[str, Any]) -> str:
         lines.append(
             f"| {split_name} | {stats['mean']:.4f} | {stats['std']:.4f} | "
             f"{stats['min']:.4f} | {stats['max']:.4f} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Target Range Overlap",
+            "",
+            "| Split | Overlaps Train | Overlap Ratio |",
+            "| --- | --- | ---: |",
+        ]
+    )
+    for split_name in ("val", "test"):
+        overlap = diagnostics["target_range_overlap"][split_name]
+        lines.append(
+            f"| {split_name} | {overlap['overlaps_train']} | "
+            f"{overlap['overlap_ratio']:.2f} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Feature Shift",
+            "",
+            "| Split | Mean Absolute Mean Shift | Mean Std Ratio |",
+            "| --- | ---: | ---: |",
+        ]
+    )
+    for split_name in ("train", "val", "test"):
+        shift = diagnostics["feature_shift"][split_name]
+        lines.append(
+            f"| {split_name} | {shift['mean_abs_mean_shift']:.4f} | "
+            f"{shift['mean_std_ratio']:.4f} |"
         )
 
     warnings = diagnostics["warnings"]
