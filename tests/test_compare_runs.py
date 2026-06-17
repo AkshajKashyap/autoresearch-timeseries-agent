@@ -30,12 +30,25 @@ def test_compare_runs_smoke_and_validation_ranking(tmp_path: Path) -> None:
         val_rmse=2.5,
         test_rmse=2.0,
     )
+    _write_run(
+        runs_dir / "lstm_normalized.json",
+        experiment_name="lstm_normalized",
+        model_name="lstm",
+        val_rmse=2.2,
+        test_rmse=5.0,
+    )
 
     comparison = compare_runs(runs_dir=runs_dir, output_dir=tmp_path)
 
     assert comparison["best_experiment"] == "high_test_low_val"
     assert comparison["runs"][0]["val_rmse"] == 2.0
     assert comparison["runs"][0]["test_rmse"] == 4.0
+    assert {run["experiment_name"] for run in comparison["runs"]} == {
+        "high_test_low_val",
+        "low_test_high_val",
+        "middle_lstm",
+        "lstm_normalized",
+    }
     assert (tmp_path / "model_comparison.json").exists()
     assert (tmp_path / "model_comparison.md").exists()
 

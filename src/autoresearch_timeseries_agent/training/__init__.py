@@ -6,7 +6,10 @@ from typing import Any
 __all__ = [
     "ExperimentConfig",
     "ModelConfig",
+    "TargetScaler",
+    "TrainingConfig",
     "build_model",
+    "fit_target_scaler",
     "load_experiment_config",
     "run_experiment",
 ]

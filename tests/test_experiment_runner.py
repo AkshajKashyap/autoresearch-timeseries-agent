@@ -6,11 +6,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from autoresearch_timeseries_agent.data import SyntheticDatasetConfig
 from autoresearch_timeseries_agent.models import LSTMForecaster, LinearBaseline, PersistenceBaseline
-from autoresearch_timeseries_agent.training import ModelConfig, build_model, load_experiment_config
+from autoresearch_timeseries_agent.training import (
+    ModelConfig,
+    build_model,
+    fit_target_scaler,
+    load_experiment_config,
+)
 
 
 def test_load_experiment_config(tmp_path: Path) -> None:
@@ -24,6 +30,7 @@ def test_load_experiment_config(tmp_path: Path) -> None:
     assert config.dataset.n_features == 3
     assert config.model.name == "linear"
     assert config.model.params["alpha"] == 0.25
+    assert config.training.normalize_target is True
     assert config.runs_dir == tmp_path / "runs"
 
 
@@ -112,8 +119,23 @@ def test_lstm_experiment_smoke(tmp_path: Path) -> None:
     assert "lstm_smoke: val RMSE=" in result.stdout
     payload = json.loads(results_path.read_text(encoding="utf-8"))
     assert payload["model"]["name"] == "lstm"
+    assert payload["training"]["normalize_target"] is True
     assert len(payload["training"]["loss_history"]) == 2
+    assert "prediction_diagnostics" in payload
     assert payload["metrics"]["test"]["rmse"] > 0
+
+
+def test_target_scaler_roundtrip() -> None:
+    y = np.array([[1.0, 2.0], [3.0, 6.0], [5.0, 10.0]])
+    scaler = fit_target_scaler(y, normalize_target=True)
+
+    restored = scaler.inverse_transform(scaler.transform(y))
+
+    np.testing.assert_allclose(restored, y)
+
+    disabled = fit_target_scaler(y, normalize_target=False)
+    np.testing.assert_allclose(disabled.transform(y), y)
+    np.testing.assert_allclose(disabled.inverse_transform(y), y)
 
 
 def _write_config(tmp_path: Path, *, experiment_name: str, model_name: str) -> Path:
@@ -146,7 +168,9 @@ dataset:
   seed: 9
 model:
   name: {model_name}
-{alpha_line}{lstm_lines}reporting:
+{alpha_line}{lstm_lines}training:
+  normalize_target: true
+reporting:
   runs_dir: {tmp_path / "runs"}
 """,
         encoding="utf-8",

@@ -1,5 +1,5 @@
 experiment:
-  name: lstm
+  name: lstm_small
 
 dataset:
   name: synthetic
@@ -14,16 +14,16 @@ dataset:
 
 model:
   name: lstm
-  hidden_size: 32
+  hidden_size: 16
   num_layers: 1
   dropout: 0.0
   batch_size: 32
-  epochs: 12
-  learning_rate: 0.01
+  epochs: 8
+  learning_rate: 0.005
   seed: 42
 
 training:
-  normalize_target: true
+  normalize_target: false
 
 reporting:
   runs_dir: reports/runs

@@ -1,5 +1,5 @@
 experiment:
-  name: lstm
+  name: lstm_longer_train
 
 dataset:
   name: synthetic
@@ -18,8 +18,8 @@ model:
   num_layers: 1
   dropout: 0.0
   batch_size: 32
-  epochs: 12
-  learning_rate: 0.01
+  epochs: 32
+  learning_rate: 0.003
   seed: 42
 
 training:

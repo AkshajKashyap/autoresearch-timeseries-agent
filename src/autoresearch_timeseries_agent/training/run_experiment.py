@@ -34,20 +34,42 @@ class ExperimentConfig:
     experiment_name: str
     dataset: SyntheticDatasetConfig
     model: ModelConfig
+    training: TrainingConfig
     runs_dir: Path = Path("reports/runs")
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    normalize_target: bool = True
+
+
+@dataclass(frozen=True)
+class TargetScaler:
+    mean: FloatArray
+    std: FloatArray
+    enabled: bool
+
+    def transform(self, y: FloatArray) -> FloatArray:
+        return (y - self.mean) / self.std
+
+    def inverse_transform(self, y: FloatArray) -> FloatArray:
+        return y * self.std + self.mean
 
 
 def run_experiment(config_path: Path) -> dict[str, Any]:
     experiment_config = load_experiment_config(config_path)
     splits = make_synthetic_dataset(experiment_config.dataset)
     model = build_model(experiment_config.model, experiment_config.dataset)
-    training_summary = _train_model(model, splits.train, experiment_config.model)
-
-    metrics = {
-        "train": _evaluate_split(model, splits.train),
-        "val": _evaluate_split(model, splits.val),
-        "test": _evaluate_split(model, splits.test),
-    }
+    training_summary = _train_model(
+        model,
+        splits.train,
+        experiment_config.model,
+        experiment_config.training,
+    )
+    metrics, prediction_diagnostics = _evaluate_splits(
+        model,
+        {"train": splits.train, "val": splits.val, "test": splits.test},
+    )
     results = {
         "experiment_name": experiment_config.experiment_name,
         "config_path": str(config_path),
@@ -58,6 +80,7 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
         "dataset": asdict(experiment_config.dataset),
         "metrics": metrics,
         "training": training_summary,
+        "prediction_diagnostics": prediction_diagnostics,
         "per_horizon_analysis": {
             split_name: describe_per_horizon_rmse(split_metrics["per_horizon_rmse"])
             for split_name, split_metrics in metrics.items()
@@ -80,6 +103,7 @@ def load_experiment_config(config_path: Path) -> ExperimentConfig:
     config = _load_yaml(config_path)
     dataset_config = _dataset_config_from_mapping(config)
     model_config = _model_config_from_mapping(config)
+    training_config = _training_config_from_mapping(config)
 
     experiment = _mapping_section(config, "experiment")
     default_name = model_config.name
@@ -94,6 +118,7 @@ def load_experiment_config(config_path: Path) -> ExperimentConfig:
         experiment_name=experiment_name,
         dataset=dataset_config,
         model=model_config,
+        training=training_config,
         runs_dir=runs_dir,
     )
 
@@ -143,6 +168,23 @@ def describe_per_horizon_rmse(values: list[float]) -> dict[str, bool | int | flo
         "worst_horizon": worst_index + 1,
         "worst_rmse": values[worst_index],
     }
+
+
+def fit_target_scaler(y: NDArray[np.floating], *, normalize_target: bool) -> TargetScaler:
+    targets = np.asarray(y, dtype=np.float64)
+    if targets.ndim != 2:
+        msg = f"y must have shape (num_windows, forecast_horizon); got {targets.shape}"
+        raise ValueError(msg)
+    if normalize_target:
+        mean = targets.mean(axis=0, keepdims=True)
+        std = np.maximum(targets.std(axis=0, keepdims=True), 1e-8)
+        return TargetScaler(mean=mean, std=std, enabled=True)
+
+    return TargetScaler(
+        mean=np.zeros((1, targets.shape[1]), dtype=np.float64),
+        std=np.ones((1, targets.shape[1]), dtype=np.float64),
+        enabled=False,
+    )
 
 
 def main() -> None:
@@ -211,35 +253,82 @@ def _model_config_from_mapping(config: dict[str, Any]) -> ModelConfig:
     return ModelConfig(name=name, params=params)
 
 
+def _training_config_from_mapping(config: dict[str, Any]) -> TrainingConfig:
+    training = _mapping_section(config, "training")
+    return TrainingConfig(normalize_target=_as_bool(training.get("normalize_target", True)))
+
+
 def _train_model(
     model: BaselineModel,
     train: WindowedDataset,
     model_config: ModelConfig,
+    training_config: TrainingConfig,
 ) -> dict[str, Any]:
     if isinstance(model, LSTMForecaster):
-        return _train_lstm(model, train, model_config)
+        return _train_lstm(model, train, model_config, training_config)
 
     model.fit(train.X, train.y)
     return {"loss_history": []}
 
 
-def _evaluate_split(
+def _evaluate_splits(
+    model: BaselineModel,
+    splits: dict[str, WindowedDataset],
+) -> tuple[dict[str, dict[str, float | list[float]]], dict[str, dict[str, Any]]]:
+    metrics = {}
+    diagnostics = {}
+    for split_name, split in splits.items():
+        predictions = _predict_split(model, split)
+        split_metrics = evaluate_forecast(split.y, predictions)
+        metrics[split_name] = split_metrics
+        diagnostics[split_name] = build_prediction_diagnostics(
+            split.y,
+            predictions,
+            split_metrics["per_horizon_rmse"],
+        )
+    return metrics, diagnostics
+
+
+def build_prediction_diagnostics(
+    y_true: NDArray[np.floating],
+    y_pred: NDArray[np.floating],
+    per_horizon_rmse: list[float],
+    *,
+    sample_size: int = 2,
+) -> dict[str, Any]:
+    actual = np.asarray(y_true, dtype=np.float64)
+    predicted = np.asarray(y_pred, dtype=np.float64)
+    residuals = predicted - actual
+    horizon = describe_per_horizon_rmse(per_horizon_rmse)
+    return {
+        "y_true_sample": np.round(actual[:sample_size], 6).tolist(),
+        "y_pred_sample": np.round(predicted[:sample_size], 6).tolist(),
+        "residual_mean": float(residuals.mean()),
+        "residual_std": float(residuals.std()),
+        "best_horizon": horizon["best_horizon"],
+        "best_horizon_rmse": horizon["best_rmse"],
+        "worst_horizon": horizon["worst_horizon"],
+        "worst_horizon_rmse": horizon["worst_rmse"],
+        "per_horizon_rmse_generally_increases": horizon["generally_increases"],
+    }
+
+
+def _predict_split(
     model: BaselineModel,
     split: WindowedDataset,
-) -> dict[str, float | list[float]]:
+) -> FloatArray:
     if isinstance(model, PersistenceBaseline):
-        predictions = model.predict(split.X, forecast_horizon=split.y.shape[1])
-    elif isinstance(model, LSTMForecaster):
-        predictions = _predict_lstm(model, split.X)
-    else:
-        predictions = model.predict(split.X)
-    return evaluate_forecast(split.y, predictions)
+        return model.predict(split.X, forecast_horizon=split.y.shape[1])
+    if isinstance(model, LSTMForecaster):
+        return _predict_lstm(model, split.X)
+    return model.predict(split.X)
 
 
 def _train_lstm(
     model: LSTMForecaster,
     train: WindowedDataset,
     model_config: ModelConfig,
+    training_config: TrainingConfig,
 ) -> dict[str, Any]:
     params = model_config.params
     seed = int(params.get("seed", 42))
@@ -257,7 +346,11 @@ def _train_lstm(
         raise ValueError(msg)
 
     _seed_torch(seed)
-    X_train, y_train = _fit_lstm_scalers(model, train)
+    X_train, y_train = _fit_lstm_scalers(
+        model,
+        train,
+        normalize_target=training_config.normalize_target,
+    )
     generator = torch.Generator().manual_seed(seed)
     loader = DataLoader(
         TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train)),
@@ -290,25 +383,26 @@ def _train_lstm(
         "batch_size": batch_size,
         "learning_rate": learning_rate,
         "seed": seed,
+        "normalize_target": training_config.normalize_target,
     }
 
 
 def _fit_lstm_scalers(
     model: LSTMForecaster,
     train: WindowedDataset,
+    *,
+    normalize_target: bool,
 ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
     feature_mean = train.X.mean(axis=(0, 1), keepdims=True)
     feature_std = train.X.std(axis=(0, 1), keepdims=True)
-    target_mean = train.y.mean(axis=0, keepdims=True)
-    target_std = train.y.std(axis=0, keepdims=True)
+    target_scaler = fit_target_scaler(train.y, normalize_target=normalize_target)
 
     model.feature_mean_ = feature_mean
     model.feature_std_ = np.maximum(feature_std, 1e-8)
-    model.target_mean_ = target_mean
-    model.target_std_ = np.maximum(target_std, 1e-8)
+    model.target_scaler_ = target_scaler
     return (
         _scale_lstm_X(model, train.X).astype(np.float32),
-        ((train.y - model.target_mean_) / model.target_std_).astype(np.float32),
+        target_scaler.transform(train.y).astype(np.float32),
     )
 
 
@@ -320,7 +414,7 @@ def _predict_lstm(model: LSTMForecaster, X: FloatArray) -> FloatArray:
     scaled_X = torch.from_numpy(_scale_lstm_X(model, X).astype(np.float32))
     with torch.no_grad():
         scaled_predictions = model(scaled_X).numpy()
-    return scaled_predictions * model.target_std_ + model.target_mean_
+    return model.target_scaler_.inverse_transform(scaled_predictions)
 
 
 def _scale_lstm_X(model: LSTMForecaster, X: FloatArray) -> FloatArray:
@@ -342,6 +436,19 @@ def _mapping_section(config: dict[str, Any], key: str) -> dict[str, Any]:
         msg = f"Config section {key!r} must be a mapping; got {type(value).__name__}"
         raise ValueError(msg)
     return value
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    msg = f"Expected a boolean value; got {value!r}"
+    raise ValueError(msg)
 
 
 def _render_markdown_report(results: dict[str, Any]) -> str:
@@ -377,8 +484,21 @@ def _render_markdown_report(results: dict[str, Any]) -> str:
                 "## Training Summary",
                 "",
                 f"- Epochs: `{training['epochs']}`",
+                f"- Target normalization: `{training['normalize_target']}`",
                 f"- Final training loss: `{training['final_loss']:.6f}`",
                 f"- Loss history: `{_format_loss_history(training['loss_history'])}`",
+            ]
+        )
+
+    diagnostics = results.get("prediction_diagnostics", {}).get("test")
+    if diagnostics:
+        lines.extend(
+            [
+                "",
+                "## Prediction Diagnostics",
+                "",
+                f"- Test residual mean: `{diagnostics['residual_mean']:.6f}`",
+                f"- Test residual std: `{diagnostics['residual_std']:.6f}`",
             ]
         )
 
