@@ -23,7 +23,7 @@ NEXT_STEPS = [
     "Keep model selection focused on chronological validation RMSE.",
     "Add real external datasets only after documenting provenance and evaluation assumptions.",
     "Use the plotting and project summary outputs as the default GitHub-facing report layer.",
-    "Consider Transformer or agent extensions only after the reporting baseline remains stable.",
+    "Consider future agent or benchmark expansion only after real-data evaluation assumptions are clear.",
 ]
 
 

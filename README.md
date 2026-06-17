@@ -127,10 +127,12 @@ Docs:
 - [Reproducibility](docs/reproducibility.md)
 - [Interview Notes](docs/interview_notes.md)
 - [Limitations](docs/limitations.md)
+- [Repository Description](docs/repo_description.md)
 
 Generated reports:
 
 - [Project Summary](reports/project_summary.md)
 - [Model Comparison](reports/model_comparison.md)
 - [Repo Health Check](reports/repo_health_check.md)
+- [Final Portfolio Review](reports/final_portfolio_review.md)
 - `reports/figures/*.png`

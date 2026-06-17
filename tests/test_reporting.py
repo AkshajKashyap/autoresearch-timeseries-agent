@@ -152,6 +152,7 @@ def test_readme_referenced_docs_exist() -> None:
         Path("docs/reproducibility.md"),
         Path("docs/interview_notes.md"),
         Path("docs/limitations.md"),
+        Path("docs/repo_description.md"),
     ]
 
     for path in doc_paths:

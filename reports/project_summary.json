@@ -1,0 +1,152 @@
+{
+  "project_goal": "Build a reproducible, local time-series forecasting benchmark foundation that a future agent layer can control through configs and report files.",
+  "supported_dataset_sources": [
+    "synthetic",
+    "csv"
+  ],
+  "supported_models": [
+    "persistence",
+    "linear",
+    "lstm",
+    "transformer"
+  ],
+  "split_strategy_explanation": {
+    "chronological": "Train, validation, and test windows stay ordered in time. This is the realistic evaluation mode for forecasting claims.",
+    "blocked_shuffle": "Windows are created then deterministically shuffled into splits. This is diagnostic-only and helps separate model capacity from temporal shift."
+  },
+  "evaluation_caveat": "Model selection should use validation RMSE from chronological runs. Test metrics are held out for final context, and blocked_shuffle runs are diagnostic-only.",
+  "best_realistic_chronological": {
+    "experiment_name": "linear",
+    "model_name": "linear",
+    "dataset_source": "synthetic",
+    "split_strategy": "chronological",
+    "val_rmse": 0.5918553559604659,
+    "test_rmse": 0.8092081936637321,
+    "scale_features": false,
+    "normalize_target": false
+  },
+  "best_diagnostic_blocked_shuffle": {
+    "experiment_name": "lstm_blocked_shuffle",
+    "model_name": "lstm",
+    "dataset_source": "synthetic",
+    "split_strategy": "blocked_shuffle",
+    "val_rmse": 0.5532860183498582,
+    "test_rmse": 0.5875009880914349,
+    "scale_features": true,
+    "normalize_target": true
+  },
+  "csv_results": [
+    {
+      "experiment_name": "csv_linear",
+      "model_name": "linear",
+      "dataset_source": "csv",
+      "split_strategy": "chronological",
+      "val_rmse": 0.6968899392345953,
+      "test_rmse": 0.6505779658616055,
+      "scale_features": false,
+      "normalize_target": false
+    },
+    {
+      "experiment_name": "agent_csv_linear_alpha_0_1_chronological",
+      "model_name": "linear",
+      "dataset_source": "csv",
+      "split_strategy": "chronological",
+      "val_rmse": 0.7668187377466487,
+      "test_rmse": 0.6979992422635726,
+      "scale_features": false,
+      "normalize_target": false
+    },
+    {
+      "experiment_name": "csv_transformer",
+      "model_name": "transformer",
+      "dataset_source": "csv",
+      "split_strategy": "chronological",
+      "val_rmse": 1.0148735236208606,
+      "test_rmse": 2.3703474045476556,
+      "scale_features": true,
+      "normalize_target": true
+    },
+    {
+      "experiment_name": "agent_csv_transformer_small_chronological",
+      "model_name": "transformer",
+      "dataset_source": "csv",
+      "split_strategy": "chronological",
+      "val_rmse": 1.061360967388007,
+      "test_rmse": 3.312631494152294,
+      "scale_features": true,
+      "normalize_target": true
+    },
+    {
+      "experiment_name": "agent_csv_lstm_small_chronological",
+      "model_name": "lstm",
+      "dataset_source": "csv",
+      "split_strategy": "chronological",
+      "val_rmse": 1.360079827676522,
+      "test_rmse": 5.88693030507009,
+      "scale_features": true,
+      "normalize_target": true
+    }
+  ],
+  "agent_summary": {
+    "available": true,
+    "objective": "Improve chronological validation RMSE on CSV data under a small CPU budget",
+    "generated_config_count": 3,
+    "best_generated": {
+      "experiment_name": "agent_csv_linear_alpha_0_1_chronological",
+      "model_name": "linear",
+      "split_strategy": "chronological",
+      "scale_features": false,
+      "normalize_target": false,
+      "val_rmse": 0.7668187377466487,
+      "test_rmse": 0.6979992422635726
+    },
+    "comparison_best": {
+      "rank": 1,
+      "experiment_name": "lstm_blocked_shuffle",
+      "model_name": "lstm",
+      "dataset_source": "synthetic",
+      "split_strategy": "blocked_shuffle",
+      "scale_features": true,
+      "normalize_target": true,
+      "val_rmse": 0.5532860183498582,
+      "val_mae": 0.4314442135648064,
+      "val_mape": 1.718046913603704,
+      "test_rmse": 0.5875009880914349,
+      "test_mae": 0.46375580726822724,
+      "test_mape": 1.8361147287773931
+    },
+    "critique": "The objective was: Improve chronological validation RMSE on CSV data under a small CPU budget. The best generated run is agent_csv_linear_alpha_0_1_chronological with validation RMSE 0.7668; it is a realistic chronological result. The best generated run did not improve over the previous chronological best by 0.1750 validation RMSE. The overall comparison winner is lstm_blocked_shuffle (a diagnostic blocked-shuffle result).",
+    "recommended_next_experiment": "Try one more chronological linear regularization probe around the winning alpha, then compare against the scaled Transformer with the same validation protocol."
+  },
+  "dataset_diagnostics": {
+    "available": true,
+    "source": "csv",
+    "row_count": 720,
+    "target_column": "value",
+    "selected_feature_columns": [
+      "temperature",
+      "promo_index",
+      "demand_driver",
+      "lagged_driver"
+    ],
+    "warnings": []
+  },
+  "comparison": {
+    "available": true,
+    "ranking_metric": "val_rmse",
+    "best_experiment": "lstm_blocked_shuffle",
+    "selection_note": "Models are ranked by validation RMSE. Test metrics are held out for final evaluation."
+  },
+  "limitations": [
+    "The included CSV is a deterministic local ingestion demo, not an external benchmark.",
+    "Blocked-shuffle results are diagnostic-only and should not be treated as deployment estimates.",
+    "Neural configs are intentionally small CPU-friendly baselines, not exhaustive tuning.",
+    "The current local agent is deterministic and config-bounded; it is not an LLM agent."
+  ],
+  "next_steps": [
+    "Keep model selection focused on chronological validation RMSE.",
+    "Add real external datasets only after documenting provenance and evaluation assumptions.",
+    "Use the plotting and project summary outputs as the default GitHub-facing report layer.",
+    "Consider future agent or benchmark expansion only after real-data evaluation assumptions are clear."
+  ]
+}
