@@ -1,5 +1,5 @@
 experiment:
-  name: persistence
+  name: linear
 
 dataset:
   name: synthetic
@@ -12,7 +12,8 @@ dataset:
   seed: 42
 
 model:
-  name: persistence
+  name: linear
+  alpha: 1.0
 
 reporting:
   runs_dir: reports/runs
