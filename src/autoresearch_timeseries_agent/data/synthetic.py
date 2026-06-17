@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -13,6 +14,7 @@ FloatArray = NDArray[np.float64]
 
 @dataclass(frozen=True)
 class SyntheticDatasetConfig:
+    source: str = "synthetic"
     mode: str = "linear"
     split_strategy: str = "chronological"
     n_timesteps: int = 600
@@ -30,6 +32,7 @@ class TimeSeriesDatasetSplits:
     val: WindowedDataset
     test: WindowedDataset
     raw_series: FloatArray
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def generate_synthetic_series(config: SyntheticDatasetConfig) -> FloatArray:
@@ -100,10 +103,14 @@ def make_synthetic_dataset(config: SyntheticDatasetConfig) -> TimeSeriesDatasetS
             forecast_horizon=config.forecast_horizon,
         ),
         raw_series=series,
+        metadata=_metadata(config, row_count=series.shape[0]),
     )
 
 
 def _validate_config(config: SyntheticDatasetConfig) -> None:
+    if config.source != "synthetic":
+        msg = f"source must be 'synthetic'; got {config.source!r}"
+        raise ValueError(msg)
     if config.mode not in {"linear", "nonlinear"}:
         msg = f"mode must be 'linear' or 'nonlinear'; got {config.mode!r}"
         raise ValueError(msg)
@@ -194,6 +201,7 @@ def _make_blocked_shuffle_dataset(
         val=_subset_windows(windows, val_idx),
         test=_subset_windows(windows, test_idx),
         raw_series=series,
+        metadata=_metadata(config, row_count=series.shape[0]),
     )
 
 
@@ -239,3 +247,18 @@ def _apply_nonlinear_effects(
 
     nonlinear += rng.normal(loc=0.0, scale=0.06, size=features.shape)
     return nonlinear
+
+
+def _metadata(config: SyntheticDatasetConfig, *, row_count: int) -> dict[str, Any]:
+    return {
+        "source": "synthetic",
+        "mode": config.mode,
+        "split_strategy": config.split_strategy,
+        "row_count": row_count,
+        "n_timesteps": config.n_timesteps,
+        "n_features": config.n_features,
+        "input_length": config.input_length,
+        "forecast_horizon": config.forecast_horizon,
+        "target_column": "feature_0",
+        "selected_feature_columns": [f"feature_{idx}" for idx in range(config.n_features)],
+    }

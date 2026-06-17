@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from autoresearch_timeseries_agent.data import SyntheticDatasetConfig
@@ -23,6 +24,7 @@ from autoresearch_timeseries_agent.training import (
     fit_target_scaler,
     load_experiment_config,
 )
+from autoresearch_timeseries_agent.training.run_experiment import run_experiment
 
 
 def test_load_experiment_config(tmp_path: Path) -> None:
@@ -39,6 +41,14 @@ def test_load_experiment_config(tmp_path: Path) -> None:
     assert config.training.scale_features is True
     assert config.training.normalize_target is True
     assert config.runs_dir == tmp_path / "runs"
+
+
+def test_existing_synthetic_config_still_loads() -> None:
+    config = load_experiment_config(Path("configs/linear.yaml"))
+
+    assert config.dataset.source == "synthetic"
+    assert config.dataset.mode == "nonlinear"
+    assert config.model.name == "linear"
 
 
 def test_model_factory_selects_models() -> None:
@@ -176,6 +186,47 @@ def test_transformer_experiment_smoke(tmp_path: Path) -> None:
     assert payload["metrics"]["test"]["rmse"] > 0
 
 
+def test_run_experiment_csv_smoke(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = tmp_path / "csv_smoke.yaml"
+    config_path.write_text(
+        f"""
+experiment:
+  name: csv_smoke
+dataset:
+  source: csv
+  path: {csv_path}
+  timestamp_column: timestamp
+  target_column: value
+  feature_columns: null
+  split_strategy: chronological
+  input_length: 8
+  forecast_horizon: 4
+  train_fraction: 0.6
+  val_fraction: 0.2
+  seed: 9
+model:
+  name: linear
+  alpha: 0.5
+training:
+  scale_features: false
+  normalize_target: false
+reporting:
+  runs_dir: {tmp_path / "runs"}
+""",
+        encoding="utf-8",
+    )
+
+    result = run_experiment(config_path)
+
+    results_path = tmp_path / "runs" / "csv_smoke.json"
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    assert result["dataset_source"] == "csv"
+    assert payload["dataset_metadata"]["target_column"] == "value"
+    assert payload["dataset_metadata"]["selected_feature_columns"] == ["feature_a", "feature_b"]
+    assert payload["metrics"]["test"]["rmse"] >= 0.0
+
+
 def test_feature_scaler_uses_train_statistics_only() -> None:
     train_X = np.array(
         [
@@ -269,3 +320,20 @@ reporting:
         encoding="utf-8",
     )
     return config_path
+
+
+def _write_csv(tmp_path: Path) -> Path:
+    n_rows = 80
+    time = np.arange(n_rows, dtype=np.float64)
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2024-01-01", periods=n_rows, freq="h"),
+            "value": 10.0 + 0.5 * time + np.sin(time / 4.0),
+            "feature_a": time,
+            "feature_b": np.cos(time / 5.0),
+            "label": ["ignored"] * n_rows,
+        }
+    )
+    path = tmp_path / "csv_smoke.csv"
+    frame.to_csv(path, index=False)
+    return path

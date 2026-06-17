@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from autoresearch_timeseries_agent.agents import (
     ExperimentProposal,
@@ -126,6 +127,88 @@ def test_run_agent_smoke_with_mocked_execution(tmp_path: Path) -> None:
     assert (tmp_path / "reports" / "agent" / "agent_final_report.md").exists()
     assert result.best_generated is not None
     assert result.best_generated["experiment_name"] == "agent_linear_alpha_0_1_chronological"
+
+
+def test_run_agent_with_base_config_writes_csv_variants(tmp_path: Path) -> None:
+    base_config = tmp_path / "configs" / "csv_linear.yaml"
+    base_config.parent.mkdir(parents=True)
+    base_config.write_text(
+        """
+experiment:
+  name: csv_linear
+dataset:
+  source: csv
+  path: data/raw/example_timeseries.csv
+  timestamp_column: timestamp
+  target_column: value
+  feature_columns: null
+  split_strategy: chronological
+  input_length: 8
+  forecast_horizon: 4
+  train_fraction: 0.6
+  val_fraction: 0.2
+model:
+  name: linear
+  alpha: 1.0
+training:
+  scale_features: false
+  normalize_target: false
+reporting:
+  runs_dir: reports/runs
+""",
+        encoding="utf-8",
+    )
+
+    def fake_experiment_tool(config_path: Path) -> dict[str, object]:
+        name = config_path.stem
+        return {
+            "command": f"python -m autoresearch_timeseries_agent.training.run_experiment --config {config_path}",
+            "result": {
+                "experiment_name": name,
+                "model": {"name": "linear"},
+                "dataset_source": "csv",
+                "split_strategy": "chronological",
+                "scale_features": False,
+                "normalize_target": False,
+                "metrics": {
+                    "val": {"rmse": 1.0},
+                    "test": {"rmse": 1.2},
+                },
+            },
+        }
+
+    def fake_comparison_tool() -> dict[str, object]:
+        return {
+            "command": "python -m autoresearch_timeseries_agent.training.compare_runs",
+            "result": {
+                "runs": [
+                    {
+                        "experiment_name": "agent_csv_linear_alpha_0_1_chronological",
+                        "model_name": "linear",
+                        "split_strategy": "chronological",
+                        "val_rmse": 1.0,
+                        "test_rmse": 1.2,
+                    }
+                ]
+            },
+        }
+
+    result = run_agent(
+        "Improve chronological validation RMSE on CSV data",
+        project_root=tmp_path,
+        base_config_path=Path("configs/csv_linear.yaml"),
+        max_experiments=1,
+        experiment_tool=fake_experiment_tool,
+        comparison_tool=fake_comparison_tool,
+    )
+
+    generated_path = Path(result.generated_configs[0])
+    assert generated_path.parent == tmp_path / "configs" / "agent_generated"
+    assert generated_path.name == "agent_csv_linear_alpha_0_1_chronological.yaml"
+    generated = yaml.safe_load(generated_path.read_text(encoding="utf-8"))
+    assert generated["dataset"]["source"] == "csv"
+    assert generated["dataset"]["target_column"] == "value"
+    assert generated["experiment"]["name"] == "agent_csv_linear_alpha_0_1_chronological"
 
 
 def test_agent_does_not_overwrite_existing_handwritten_configs(tmp_path: Path) -> None:

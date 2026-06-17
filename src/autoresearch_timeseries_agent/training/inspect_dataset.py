@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from autoresearch_timeseries_agent.data import make_synthetic_dataset
+from autoresearch_timeseries_agent.data import make_dataset
 from autoresearch_timeseries_agent.data.windowing import WindowedDataset
 from autoresearch_timeseries_agent.evaluation import rmse
 from autoresearch_timeseries_agent.models import PersistenceBaseline
@@ -17,12 +17,19 @@ from autoresearch_timeseries_agent.training.run_experiment import load_experimen
 
 def inspect_dataset(config_path: Path, *, output_dir: Path = Path("reports")) -> dict[str, Any]:
     experiment_config = load_experiment_config(config_path)
-    splits = make_synthetic_dataset(experiment_config.dataset)
+    splits = make_dataset(experiment_config.dataset)
     split_map = {"train": splits.train, "val": splits.val, "test": splits.test}
+    metadata = splits.metadata
 
     diagnostics = {
         "config_path": str(config_path),
         "dataset": asdict(experiment_config.dataset),
+        "dataset_metadata": metadata,
+        "source": metadata.get("source", "synthetic"),
+        "path": metadata.get("path"),
+        "row_count": metadata.get("row_count", splits.raw_series.shape[0]),
+        "target_column": metadata.get("target_column", "feature_0"),
+        "selected_feature_columns": metadata.get("selected_feature_columns", []),
         "split_strategy": experiment_config.dataset.split_strategy,
         "split_sizes": {
             name: _split_size(split)
@@ -64,7 +71,7 @@ def inspect_dataset(config_path: Path, *, output_dir: Path = Path("reports")) ->
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect synthetic dataset splits.")
+    parser = argparse.ArgumentParser(description="Inspect dataset splits.")
     parser.add_argument("--config", type=Path, required=True, help="Path to an experiment YAML config.")
     parser.add_argument("--output-dir", type=Path, default=Path("reports"))
     args = parser.parse_args()
@@ -154,18 +161,26 @@ def _range_warnings(
 
 
 def _render_markdown(diagnostics: dict[str, Any]) -> str:
+    source = diagnostics.get("source", diagnostics["dataset"].get("source", "synthetic"))
     lines = [
         "# Dataset Diagnostics",
         "",
         f"- Config: `{diagnostics['config_path']}`",
-        f"- Dataset mode: `{diagnostics['dataset']['mode']}`",
+        f"- Dataset source: `{source}`",
         f"- Split strategy: `{diagnostics['split_strategy']}`",
+        f"- Row count: `{diagnostics['row_count']}`",
+        f"- Target column: `{diagnostics['target_column']}`",
+        f"- Selected feature columns: `{diagnostics['selected_feature_columns']}`",
         "",
         "## Split Sizes",
         "",
         "| Split | Windows | Input Length | Forecast Horizon | Persistence RMSE |",
         "| --- | ---: | ---: | ---: | ---: |",
     ]
+    if source == "csv":
+        lines.insert(4, f"- CSV path: `{diagnostics['path']}`")
+    else:
+        lines.insert(4, f"- Dataset mode: `{diagnostics['dataset'].get('mode', 'linear')}`")
     for split_name in ("train", "val", "test"):
         sizes = diagnostics["split_sizes"][split_name]
         persistence = diagnostics["naive_persistence_rmse"][split_name]

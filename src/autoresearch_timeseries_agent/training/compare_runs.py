@@ -73,9 +73,14 @@ def _comparison_row(result: dict[str, Any]) -> dict[str, Any]:
     model = result["model"]
     training = result.get("training", {})
     dataset = result.get("dataset", {})
+    dataset_metadata = result.get("dataset_metadata", {})
     return {
         "experiment_name": result["experiment_name"],
         "model_name": model["name"],
+        "dataset_source": result.get(
+            "dataset_source",
+            dataset_metadata.get("source", dataset.get("source", "synthetic")),
+        ),
         "split_strategy": result.get(
             "split_strategy",
             dataset.get("split_strategy", "chronological"),
@@ -100,13 +105,14 @@ def _render_markdown_comparison(comparison: dict[str, Any]) -> str:
         "Models are ranked by validation RMSE. Test metrics are included only as held-out "
         "evaluation context and are not used for model selection.",
         "",
-        "| Rank | Experiment | Model | Split Strategy | Val RMSE | Test RMSE | Scale Features | Normalize Target |",
-        "| ---: | --- | --- | --- | ---: | ---: | --- | --- |",
+        "| Rank | Experiment | Model | Dataset | Split Strategy | Val RMSE | Test RMSE | Scale Features | Normalize Target |",
+        "| ---: | --- | --- | --- | --- | ---: | ---: | --- | --- |",
     ]
     for row in comparison["runs"]:
         lines.append(
             f"| {row['rank']} | {row['experiment_name']} | {row['model_name']} | "
-            f"{row['split_strategy']} | {row['val_rmse']:.4f} | {row['test_rmse']:.4f} | "
+            f"{row['dataset_source']} | {row['split_strategy']} | "
+            f"{row['val_rmse']:.4f} | {row['test_rmse']:.4f} | "
             f"{row['scale_features']} | {row['normalize_target']} |"
         )
 

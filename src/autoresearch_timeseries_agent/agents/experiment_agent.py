@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 from autoresearch_timeseries_agent.tools import (
     load_comparison_report,
     load_dataset_diagnostics,
@@ -48,6 +50,7 @@ def run_agent(
     objective: str,
     *,
     project_root: Path = Path("."),
+    base_config_path: Path | None = None,
     max_experiments: int = 3,
     experiment_tool: ExperimentTool = run_experiment_config,
     comparison_tool: ComparisonTool = run_comparison,
@@ -58,10 +61,12 @@ def run_agent(
 
     comparison = load_comparison_report(project_root / "reports/model_comparison.json")
     diagnostics = load_dataset_diagnostics(project_root / "reports/dataset_diagnostics.json")
+    base_config = _load_base_config(project_root, base_config_path, objective)
     proposals = plan_experiments(
         objective,
         comparison_report=comparison,
         dataset_diagnostics=diagnostics,
+        base_config=base_config,
         max_experiments=max_experiments,
     )
 
@@ -114,19 +119,28 @@ def plan_experiments(
     *,
     comparison_report: dict[str, Any] | None,
     dataset_diagnostics: dict[str, Any] | None,
+    base_config: dict[str, Any] | None = None,
     max_experiments: int = 3,
 ) -> list[ExperimentProposal]:
     if max_experiments > 3:
         msg = f"Refusing to plan more than 3 experiments; got {max_experiments}"
         raise ValueError(msg)
 
-    split_strategy = _choose_split_strategy(objective)
-    proposals = [
-        _linear_probe(split_strategy),
-        _transformer_probe(split_strategy),
-        _lstm_probe(split_strategy),
-    ]
-    if _has_chronological_shift(dataset_diagnostics) and split_strategy == "chronological":
+    if base_config is not None:
+        proposals = _template_probes(base_config, objective)
+        split_strategy = proposals[0].split_strategy if proposals else "chronological"
+    else:
+        split_strategy = _choose_split_strategy(objective)
+        proposals = [
+            _linear_probe(split_strategy),
+            _transformer_probe(split_strategy),
+            _lstm_probe(split_strategy),
+        ]
+    if (
+        base_config is None
+        and _has_chronological_shift(dataset_diagnostics)
+        and split_strategy == "chronological"
+    ):
         proposals[1] = _transformer_shift_probe()
 
     _ = comparison_report
@@ -142,11 +156,114 @@ def validate_experiment_proposal(proposal: ExperimentProposal) -> None:
         raise ValueError(msg)
 
 
+def _load_base_config(
+    project_root: Path,
+    base_config_path: Path | None,
+    objective: str,
+) -> dict[str, Any] | None:
+    candidate = base_config_path
+    if candidate is None and "csv" in objective.lower():
+        default_csv = project_root / "configs" / "csv_linear.yaml"
+        candidate = default_csv if default_csv.exists() else None
+    if candidate is None:
+        return None
+
+    path = candidate if candidate.is_absolute() else project_root / candidate
+    if not path.exists():
+        msg = f"Base config does not exist: {path}"
+        raise FileNotFoundError(msg)
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        msg = f"Base config must be a YAML mapping: {path}"
+        raise ValueError(msg)
+    return loaded
+
+
 def _choose_split_strategy(objective: str) -> str:
     lowered = objective.lower()
     if "blocked" in lowered or "diagnostic" in lowered:
         return "blocked_shuffle"
     return "chronological"
+
+
+def _template_probes(base_config: dict[str, Any], objective: str) -> list[ExperimentProposal]:
+    dataset = dict(base_config.get("dataset", {}))
+    split_strategy = str(dataset.get("split_strategy", _choose_split_strategy(objective)))
+    source = str(dataset.get("source", dataset.get("name", "synthetic"))).lower()
+    prefix = "agent_csv" if source == "csv" else "agent_template"
+    probes = [
+        _template_probe(
+            base_config,
+            name=f"{prefix}_linear_alpha_0_1_{split_strategy}",
+            model={"name": "linear", "alpha": 0.1},
+            split_strategy=split_strategy,
+            rationale="Probe a lower Ridge alpha while preserving the base dataset config.",
+        ),
+        _template_probe(
+            base_config,
+            name=f"{prefix}_transformer_small_{split_strategy}",
+            model={
+                "name": "transformer",
+                "d_model": 32,
+                "nhead": 4,
+                "num_layers": 1,
+                "dim_feedforward": 64,
+                "dropout": 0.1,
+                "batch_size": 32,
+                "epochs": 8,
+                "learning_rate": 0.003,
+                "seed": 42,
+            },
+            split_strategy=split_strategy,
+            rationale="Run a small scaled Transformer variant on the base dataset config.",
+        ),
+        _template_probe(
+            base_config,
+            name=f"{prefix}_lstm_small_{split_strategy}",
+            model={
+                "name": "lstm",
+                "hidden_size": 32,
+                "num_layers": 1,
+                "dropout": 0.0,
+                "batch_size": 32,
+                "epochs": 8,
+                "learning_rate": 0.003,
+                "seed": 42,
+            },
+            split_strategy=split_strategy,
+            rationale="Run a small scaled LSTM variant on the base dataset config.",
+        ),
+    ]
+    return probes
+
+
+def _template_probe(
+    base_config: dict[str, Any],
+    *,
+    name: str,
+    model: dict[str, Any],
+    split_strategy: str,
+    rationale: str,
+) -> ExperimentProposal:
+    config = json.loads(json.dumps(base_config))
+    config["experiment"] = {**config.get("experiment", {}), "name": name}
+    config["dataset"] = {**config.get("dataset", {}), "split_strategy": split_strategy}
+    config["model"] = model
+    config["training"] = {
+        **config.get("training", {}),
+        "scale_features": model["name"] in {"lstm", "transformer"},
+        "normalize_target": model["name"] in {"lstm", "transformer"},
+    }
+    config["reporting"] = {**config.get("reporting", {}), "runs_dir": "reports/runs"}
+    proposal = ExperimentProposal(
+        name=name,
+        model_name=str(model["name"]),
+        split_strategy=split_strategy,
+        config=config,
+        rationale=rationale,
+    )
+    validate_experiment_proposal(proposal)
+    return proposal
 
 
 def _base_config(name: str, model: dict[str, Any], split_strategy: str) -> dict[str, Any]:

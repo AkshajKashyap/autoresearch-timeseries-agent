@@ -13,7 +13,12 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 import yaml
 
-from autoresearch_timeseries_agent.data import SyntheticDatasetConfig, make_synthetic_dataset
+from autoresearch_timeseries_agent.data import (
+    CsvDatasetConfig,
+    DatasetConfig,
+    SyntheticDatasetConfig,
+    make_dataset,
+)
 from autoresearch_timeseries_agent.data.windowing import WindowedDataset
 from autoresearch_timeseries_agent.evaluation import evaluate_forecast
 from autoresearch_timeseries_agent.models import (
@@ -38,7 +43,7 @@ class ModelConfig:
 @dataclass(frozen=True)
 class ExperimentConfig:
     experiment_name: str
-    dataset: SyntheticDatasetConfig
+    dataset: DatasetConfig
     model: ModelConfig
     training: TrainingConfig
     runs_dir: Path = Path("reports/runs")
@@ -75,8 +80,12 @@ class TargetScaler:
 
 def run_experiment(config_path: Path) -> dict[str, Any]:
     experiment_config = load_experiment_config(config_path)
-    splits = make_synthetic_dataset(experiment_config.dataset)
-    model = build_model(experiment_config.model, experiment_config.dataset)
+    splits = make_dataset(experiment_config.dataset)
+    model = build_model(
+        experiment_config.model,
+        experiment_config.dataset,
+        n_features=splits.train.X.shape[2],
+    )
     training_summary = _train_model(
         model,
         splits.train,
@@ -95,6 +104,8 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
             "params": experiment_config.model.params,
         },
         "dataset": asdict(experiment_config.dataset),
+        "dataset_metadata": splits.metadata,
+        "dataset_source": splits.metadata.get("source", "synthetic"),
         "split_strategy": experiment_config.dataset.split_strategy,
         "scale_features": experiment_config.training.scale_features,
         "normalize_target": experiment_config.training.normalize_target,
@@ -149,7 +160,11 @@ def load_experiment_config(config_path: Path) -> ExperimentConfig:
 
 def build_model(
     config: ModelConfig,
-    dataset_config: SyntheticDatasetConfig | None = None,
+    dataset_config: DatasetConfig | None = None,
+    *,
+    n_features: int | None = None,
+    input_length: int | None = None,
+    forecast_horizon: int | None = None,
 ) -> BaselineModel:
     model_name = config.name.lower()
     if model_name == "persistence":
@@ -157,24 +172,20 @@ def build_model(
     if model_name == "linear":
         return LinearBaseline(alpha=float(config.params.get("alpha", 1.0)))
     if model_name == "lstm":
-        if dataset_config is None:
-            msg = "dataset_config is required to build the LSTM model"
-            raise ValueError(msg)
+        shape = _resolve_dataset_shape(dataset_config, n_features, input_length, forecast_horizon)
         return LSTMForecaster(
-            n_features=dataset_config.n_features,
-            forecast_horizon=dataset_config.forecast_horizon,
+            n_features=shape["n_features"],
+            forecast_horizon=shape["forecast_horizon"],
             hidden_size=int(config.params.get("hidden_size", 32)),
             num_layers=int(config.params.get("num_layers", 1)),
             dropout=float(config.params.get("dropout", 0.0)),
         )
     if model_name == "transformer":
-        if dataset_config is None:
-            msg = "dataset_config is required to build the Transformer model"
-            raise ValueError(msg)
+        shape = _resolve_dataset_shape(dataset_config, n_features, input_length, forecast_horizon)
         return TransformerForecaster(
-            n_features=dataset_config.n_features,
-            forecast_horizon=dataset_config.forecast_horizon,
-            input_length=dataset_config.input_length,
+            n_features=shape["n_features"],
+            forecast_horizon=shape["forecast_horizon"],
+            input_length=shape["input_length"],
             d_model=int(config.params.get("d_model", 32)),
             nhead=int(config.params.get("nhead", 4)),
             num_layers=int(config.params.get("num_layers", 1)),
@@ -186,6 +197,43 @@ def build_model(
         "expected 'persistence', 'linear', 'lstm', or 'transformer'"
     )
     raise ValueError(msg)
+
+
+def _resolve_dataset_shape(
+    dataset_config: DatasetConfig | None,
+    n_features: int | None,
+    input_length: int | None,
+    forecast_horizon: int | None,
+) -> dict[str, int]:
+    if dataset_config is None and (
+        n_features is None or input_length is None or forecast_horizon is None
+    ):
+        msg = "dataset_config is required to build sequence models"
+        raise ValueError(msg)
+
+    resolved_input_length = (
+        input_length
+        if input_length is not None
+        else getattr(dataset_config, "input_length")
+    )
+    resolved_forecast_horizon = (
+        forecast_horizon
+        if forecast_horizon is not None
+        else getattr(dataset_config, "forecast_horizon")
+    )
+    if n_features is not None:
+        resolved_n_features = n_features
+    elif isinstance(dataset_config, SyntheticDatasetConfig):
+        resolved_n_features = dataset_config.n_features
+    else:
+        msg = "n_features is required when building sequence models for CSV datasets"
+        raise ValueError(msg)
+
+    return {
+        "n_features": int(resolved_n_features),
+        "input_length": int(resolved_input_length),
+        "forecast_horizon": int(resolved_forecast_horizon),
+    }
 
 
 def describe_per_horizon_rmse(values: list[float]) -> dict[str, bool | int | float]:
@@ -274,33 +322,74 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _dataset_config_from_mapping(config: dict[str, Any]) -> SyntheticDatasetConfig:
+def _dataset_config_from_mapping(config: dict[str, Any]) -> DatasetConfig:
     dataset = _mapping_section(config, "dataset")
     experiment = _mapping_section(config, "experiment")
     seed = dataset.get("seed", experiment.get("seed", SyntheticDatasetConfig.seed))
 
-    name = dataset.get("name", "synthetic")
-    if name != "synthetic":
-        msg = f"Only the synthetic dataset is supported in this pass; got {name!r}"
-        raise ValueError(msg)
+    source = str(dataset.get("source", dataset.get("name", "synthetic"))).lower()
+    if source == "synthetic":
+        return SyntheticDatasetConfig(
+            source="synthetic",
+            mode=str(dataset.get("mode", SyntheticDatasetConfig.mode)),
+            split_strategy=str(
+                dataset.get("split_strategy", SyntheticDatasetConfig.split_strategy)
+            ),
+            n_timesteps=int(dataset.get("n_timesteps", SyntheticDatasetConfig.n_timesteps)),
+            n_features=int(dataset.get("n_features", SyntheticDatasetConfig.n_features)),
+            input_length=int(
+                dataset.get("input_length", SyntheticDatasetConfig.input_length)
+            ),
+            forecast_horizon=int(
+                dataset.get("forecast_horizon", SyntheticDatasetConfig.forecast_horizon)
+            ),
+            train_fraction=float(
+                dataset.get("train_fraction", SyntheticDatasetConfig.train_fraction)
+            ),
+            val_fraction=float(
+                dataset.get("val_fraction", SyntheticDatasetConfig.val_fraction)
+            ),
+            seed=int(seed),
+        )
 
-    return SyntheticDatasetConfig(
-        mode=str(dataset.get("mode", SyntheticDatasetConfig.mode)),
-        split_strategy=str(
-            dataset.get("split_strategy", SyntheticDatasetConfig.split_strategy)
-        ),
-        n_timesteps=int(dataset.get("n_timesteps", SyntheticDatasetConfig.n_timesteps)),
-        n_features=int(dataset.get("n_features", SyntheticDatasetConfig.n_features)),
-        input_length=int(dataset.get("input_length", SyntheticDatasetConfig.input_length)),
-        forecast_horizon=int(
-            dataset.get("forecast_horizon", SyntheticDatasetConfig.forecast_horizon)
-        ),
-        train_fraction=float(
-            dataset.get("train_fraction", SyntheticDatasetConfig.train_fraction)
-        ),
-        val_fraction=float(dataset.get("val_fraction", SyntheticDatasetConfig.val_fraction)),
-        seed=int(seed),
-    )
+    if source == "csv":
+        return CsvDatasetConfig(
+            source="csv",
+            path=str(dataset.get("path", CsvDatasetConfig.path)),
+            timestamp_column=_optional_string(dataset.get("timestamp_column")),
+            target_column=str(dataset.get("target_column", CsvDatasetConfig.target_column)),
+            feature_columns=_optional_string_list(dataset.get("feature_columns")),
+            input_length=int(dataset.get("input_length", CsvDatasetConfig.input_length)),
+            forecast_horizon=int(
+                dataset.get("forecast_horizon", CsvDatasetConfig.forecast_horizon)
+            ),
+            train_fraction=float(
+                dataset.get("train_fraction", CsvDatasetConfig.train_fraction)
+            ),
+            val_fraction=float(dataset.get("val_fraction", CsvDatasetConfig.val_fraction)),
+            split_strategy=str(
+                dataset.get("split_strategy", CsvDatasetConfig.split_strategy)
+            ),
+            seed=int(seed),
+        )
+
+    msg = f"Unsupported dataset source {source!r}; expected 'synthetic' or 'csv'"
+    raise ValueError(msg)
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _optional_string_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        msg = f"feature_columns must be a list of strings or null; got {type(value).__name__}"
+        raise ValueError(msg)
+    return [str(item) for item in value]
 
 
 def _model_config_from_mapping(config: dict[str, Any]) -> ModelConfig:
@@ -560,6 +649,7 @@ def _target_range_warnings(
 
 def _render_markdown_report(results: dict[str, Any]) -> str:
     dataset = results["dataset"]
+    dataset_metadata = results.get("dataset_metadata", {})
     metrics = results["metrics"]
     model = results["model"]
     lines = [
@@ -567,18 +657,33 @@ def _render_markdown_report(results: dict[str, Any]) -> str:
         "",
         f"- Model: `{model['name']}`",
         f"- Model params: `{model['params']}`",
-        f"- Dataset mode: `{dataset['mode']}`",
+        f"- Dataset source: `{dataset_metadata.get('source', dataset.get('source', 'synthetic'))}`",
         f"- Split strategy: `{results['split_strategy']}`",
         f"- Feature scaling: `{results['scale_features']}`",
         f"- Target normalization: `{results['normalize_target']}`",
-        f"- Timesteps: `{dataset['n_timesteps']}`",
-        f"- Features: `{dataset['n_features']}`",
+        f"- Rows: `{dataset_metadata.get('row_count', dataset.get('n_timesteps', 'unknown'))}`",
+        f"- Features: `{dataset_metadata.get('n_features', dataset.get('n_features', 'unknown'))}`",
         f"- Input length: `{dataset['input_length']}`",
         f"- Forecast horizon: `{dataset['forecast_horizon']}`",
-        "",
-        "| Split | RMSE | MAE | MAPE |",
-        "| --- | ---: | ---: | ---: |",
     ]
+    if dataset_metadata.get("source") == "csv":
+        lines.extend(
+            [
+                f"- CSV path: `{dataset_metadata['path']}`",
+                f"- Target column: `{dataset_metadata['target_column']}`",
+                f"- Selected feature columns: `{dataset_metadata['selected_feature_columns']}`",
+            ]
+        )
+    else:
+        lines.append(f"- Dataset mode: `{dataset.get('mode', 'linear')}`")
+
+    lines.extend(
+        [
+            "",
+            "| Split | RMSE | MAE | MAPE |",
+            "| --- | ---: | ---: | ---: |",
+        ]
+    )
     for split_name in ("train", "val", "test"):
         split_metrics = metrics[split_name]
         lines.append(

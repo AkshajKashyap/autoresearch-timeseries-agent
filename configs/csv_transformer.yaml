@@ -1,0 +1,34 @@
+experiment:
+  name: csv_transformer
+
+dataset:
+  source: csv
+  path: data/raw/example_timeseries.csv
+  timestamp_column: timestamp
+  target_column: value
+  feature_columns: null
+  split_strategy: chronological
+  input_length: 48
+  forecast_horizon: 24
+  train_fraction: 0.7
+  val_fraction: 0.15
+  seed: 42
+
+model:
+  name: transformer
+  d_model: 32
+  nhead: 4
+  num_layers: 1
+  dim_feedforward: 64
+  dropout: 0.1
+  batch_size: 32
+  epochs: 12
+  learning_rate: 0.003
+  seed: 42
+
+training:
+  scale_features: true
+  normalize_target: true
+
+reporting:
+  runs_dir: reports/runs

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from autoresearch_timeseries_agent.agents.experiment_agent import run_agent
 
@@ -8,8 +9,14 @@ from autoresearch_timeseries_agent.agents.experiment_agent import run_agent
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the deterministic experiment agent.")
     parser.add_argument("--objective", required=True, help="Experiment objective for the local agent.")
+    parser.add_argument(
+        "--base-config",
+        type=Path,
+        default=None,
+        help="Optional experiment config to use as a dataset/template base.",
+    )
     args = parser.parse_args()
-    result = run_agent(args.objective)
+    result = run_agent(args.objective, base_config_path=args.base_config)
     best = result.best_generated
     if best is None:
         print("Agent completed without generated experiment metrics.")

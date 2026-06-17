@@ -6,8 +6,8 @@ The long-term goal is to compare persistence, linear, LSTM, and Transformer fore
 models while using a controlled agent loop to plan experiments, run configs, evaluate
 metrics, and write reproducible reports.
 
-This implementation intentionally remains non-agentic. There is no LangChain,
-LangGraph, OpenAI integration, web app, or Docker setup yet.
+This implementation intentionally has no LLM or external-service agent layer. There is
+no LangChain, LangGraph, OpenAI integration, web app, or Docker setup yet.
 
 ## Baseline Experiments
 
@@ -59,6 +59,25 @@ python -m autoresearch_timeseries_agent.training.run_experiment --config configs
 python -m autoresearch_timeseries_agent.training.run_experiment --config configs/transformer_blocked_shuffle.yaml
 ```
 
+Generate the deterministic local CSV example dataset with:
+
+```bash
+python scripts/create_example_csv_dataset.py
+```
+
+Run CSV-backed experiments with:
+
+```bash
+python -m autoresearch_timeseries_agent.training.run_experiment --config configs/csv_linear.yaml
+python -m autoresearch_timeseries_agent.training.run_experiment --config configs/csv_transformer.yaml
+```
+
+Inspect the CSV dataset with:
+
+```bash
+python -m autoresearch_timeseries_agent.training.inspect_dataset --config configs/csv_linear.yaml
+```
+
 Compare saved runs with:
 
 ```bash
@@ -71,9 +90,17 @@ Run the deterministic local experiment agent with:
 python -m autoresearch_timeseries_agent.agents.run_agent --objective "Improve chronological validation RMSE under a small CPU budget"
 ```
 
+Run the deterministic local agent from the CSV base config with:
+
+```bash
+python -m autoresearch_timeseries_agent.agents.run_agent --objective "Improve chronological validation RMSE on CSV data under a small CPU budget" --base-config configs/csv_linear.yaml
+```
+
 The runner:
 
 - generates deterministic synthetic multivariate time-series data
+- loads local CSV time-series data with an optional timestamp column, target column,
+  inferred numeric feature columns, and target-first internal feature ordering
 - creates chronological train/validation/test forecasting windows
 - trains the persistence, Ridge linear, LSTM, or Transformer baseline
 - supports chronological and blocked-shuffle window splitting
@@ -86,6 +113,10 @@ The runner:
 The dataset inspection command writes `reports/dataset_diagnostics.json` and
 `reports/dataset_diagnostics.md` with split sizes, target and feature summary stats,
 naive persistence RMSE, and basic train-to-validation/test range warnings.
+
+CSV support is currently a local ingestion test using `data/raw/example_timeseries.csv`.
+It verifies the benchmark pipeline can operate on file-backed tabular data, but it is
+not a claim about real-world forecasting performance.
 
 The comparison command reads JSON files in `reports/runs/`, writes
 `reports/model_comparison.json` and `reports/model_comparison.md`, and ranks models by
@@ -108,6 +139,10 @@ the comparison report, and writes `reports/agent/agent_plan.*` and
 The agent does not edit source code, does not call OpenAI or external APIs, and does not
 use LangChain, LangGraph, Streamlit, FastAPI, or Docker. It currently supports only
 bounded config changes for `linear`, `lstm`, and `transformer` experiments.
+
+When given `--base-config`, the agent preserves the base dataset block and writes
+variant configs under `configs/agent_generated/`. This is the recommended path for
+CSV-backed agent experiments.
 
 ## Synthetic Modes
 
@@ -164,6 +199,7 @@ Planner -> Config Writer -> Runner -> Evaluator -> Critic -> Report Writer
 Forecasting foundation implemented:
 
 - Synthetic deterministic multivariate dataset
+- Local CSV dataset loader with timestamp sorting and numeric feature inference
 - Supervised windowing for first-feature forecasting
 - Persistence and Ridge linear baselines
 - PyTorch LSTM baseline
